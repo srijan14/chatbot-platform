@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TelcoBot — Demo</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>TelcoBot</h1>
+    <div class="controls">
+      <label>
+        Customer:
+        <select id="customer">
+          <option value="CUST001">CUST001 — Aarav (postpaid, normal)</option>
+          <option value="CUST002" selected>CUST002 — Priya (prepaid, low data, plan expiring)</option>
+          <option value="CUST003">CUST003 — Rohan (postpaid, suspended, overdue bill)</option>
+          <option value="CUST004">CUST004 — Sneha (prepaid, normal)</option>
+          <option value="CUST005">CUST005 — Vikram (postpaid, area outage)</option>
+        </select>
+      </label>
+      <button id="reset" type="button">Reset session</button>
+    </div>
+  </header>
+
+  <main id="messages" aria-live="polite"></main>
+
+  <form id="composer">
+    <input id="input" type="text" autocomplete="off" placeholder="Ask about your account, plan, bill, network…" required />
+    <button type="submit" id="send">Send</button>
+  </form>
+
+  <footer id="status">Ready.</footer>
+
+  <script src="/static/chat.js"></script>
+</body>
+</html>
