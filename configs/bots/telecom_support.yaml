@@ -5,11 +5,20 @@ description: Handles account queries, billing, plans, addons, SIM and network is
 
 llm:
   provider: azure_openai
-  # `deployment` must match the deployment name you created in the Azure portal under
-  # your Azure OpenAI resource → "Model deployments". Common: gpt-4o, gpt-4o-mini.
+  # `deployment` is the Azure deployment name (set in Azure AI Foundry → Deployments).
+  # The AZURE_OPENAI_DEPLOYMENT env var overrides this if set — useful to switch
+  # deployments without editing the YAML.
   deployment: gpt-4o
+
+  # Reasoning models (o1, o3, o3-mini, o4-mini, …) auto-detected from the deployment
+  # name. They swap `max_tokens` → `max_completion_tokens` and ignore `temperature`.
+  # Uncomment to force when your deployment name doesn't contain the model id:
+  # reasoning: true
+
+  # For reasoning models this is `max_completion_tokens` (covers internal reasoning
+  # + final output) — bump to 4096+ if you see truncation on complex queries.
   max_tokens: 1024
-  temperature: 0.2
+  temperature: 0.2          # ignored for reasoning models
   max_tool_iterations: 6
 
 persona:

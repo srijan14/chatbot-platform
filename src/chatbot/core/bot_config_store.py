@@ -2,10 +2,26 @@
 
 Maps to the 'Bot Config Store (YAML/JSON per bot type)' box in the architecture.
 """
+import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
+
+
+# Matches o1, o1-mini, o3-mini-prod, my-o4-mini, etc. Misses opaque names like
+# 'production-bot' — for those, set llm.reasoning: true in the YAML.
+_REASONING_PATTERN = re.compile(r"(?:^|[-_/])o[1-9](?:[-_/]|$)")
+
+
+def is_reasoning_deployment(name: str) -> bool:
+    """Heuristic: detect OpenAI 'o-series' reasoning models from deployment name.
+
+    Reasoning models (o1, o3, o4-mini, etc.) use `max_completion_tokens` instead
+    of `max_tokens` and reject custom `temperature` values.
+    """
+    return bool(_REASONING_PATTERN.search(name.lower()))
 
 
 @dataclass
@@ -23,6 +39,7 @@ class BotConfig:
     # llm
     llm_provider: str          # 'azure_openai'
     llm_deployment: str        # Azure deployment name (passed as `model=` to the SDK)
+    llm_reasoning: bool        # True for o-series (o1/o3/o4-mini): swaps param names
     max_tokens: int
     temperature: float
     max_tool_iterations: int
@@ -44,10 +61,25 @@ class BotConfig:
     def from_yaml(cls, path: str | Path) -> "BotConfig":
         data = yaml.safe_load(Path(path).read_text())
         llm = data["llm"]
-        # Accept both `deployment` (preferred for Azure OpenAI) and legacy `model`.
-        deployment = llm.get("deployment") or llm.get("model")
+        # Resolution order: AZURE_OPENAI_DEPLOYMENT env var > yaml `deployment` > legacy `model`.
+        # The env override lets dev/staging/prod use different Azure deployments
+        # without editing the YAML. Empty env values are ignored.
+        deployment = (
+            os.getenv("AZURE_OPENAI_DEPLOYMENT")
+            or llm.get("deployment")
+            or llm.get("model")
+        )
         if not deployment:
             raise ValueError(f"{path}: llm.deployment is required")
+
+        # Reasoning model detection: explicit YAML wins; otherwise auto-detect
+        # from deployment name (catches o1/o3/o4-mini variants).
+        explicit_reasoning = llm.get("reasoning")
+        if explicit_reasoning is None:
+            is_reasoning = is_reasoning_deployment(deployment)
+        else:
+            is_reasoning = bool(explicit_reasoning)
+
         tool_call = data.get("tool_call") or {}
         guardrails = data.get("guardrails") or {}
         observability = data.get("observability") or {}
@@ -58,6 +90,7 @@ class BotConfig:
             description=data.get("description", ""),
             llm_provider=llm["provider"],
             llm_deployment=deployment,
+            llm_reasoning=is_reasoning,
             max_tokens=llm.get("max_tokens", 1024),
             temperature=llm.get("temperature", 0.2),
             max_tool_iterations=llm.get("max_tool_iterations", 6),

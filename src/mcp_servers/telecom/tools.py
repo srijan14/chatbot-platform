@@ -1,7 +1,7 @@
 """MCP tool definitions for the telecom domain.
 
 Each function is registered as an MCP tool via @mcp.tool() and is a thin wrapper
-over the telecom REST client. Docstrings become tool descriptions seen by Claude —
+over the telecom REST client. Docstrings become tool descriptions seen by LLM —
 keep them clear and action-oriented.
 """
 from typing import Optional

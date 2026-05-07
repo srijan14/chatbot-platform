@@ -108,14 +108,22 @@ class LLMOrchestrator:
         for iteration in range(bot_config.max_tool_iterations):
             result.iterations = iteration + 1
 
-            response = await self.client.chat.completions.create(
-                model=bot_config.llm_deployment,
-                messages=[{"role": "system", "content": system_prompt}, *session.history],
-                tools=openai_tools,
-                tool_choice="auto",
-                temperature=bot_config.temperature,
-                max_tokens=bot_config.max_tokens,
-            )
+            # Reasoning models (o-series) and chat models use different param names.
+            # Reasoning: max_completion_tokens (covers reasoning + output tokens),
+            # no `temperature` (only default 1.0 is allowed). Chat: max_tokens + temp.
+            params: dict = {
+                "model": bot_config.llm_deployment,
+                "messages": [{"role": "system", "content": system_prompt}, *session.history],
+                "tools": openai_tools,
+                "tool_choice": "auto",
+            }
+            if bot_config.llm_reasoning:
+                params["max_completion_tokens"] = bot_config.max_tokens
+            else:
+                params["max_tokens"] = bot_config.max_tokens
+                params["temperature"] = bot_config.temperature
+
+            response = await self.client.chat.completions.create(**params)
 
             choice = response.choices[0]
             msg = choice.message
