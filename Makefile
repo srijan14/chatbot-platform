@@ -24,6 +24,9 @@ run:
 test:
 	. .venv/bin/activate && pytest tests/ -v
 
+notebook:
+	. .venv/bin/activate && jupyter notebook notebooks/mcp_demo.ipynb
+
 smoke:
 	@curl -sS http://localhost:8001/health && echo
 	@curl -sS http://localhost:8000/health && echo
