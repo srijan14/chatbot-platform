@@ -47,12 +47,12 @@ def _stack():
     env["MCP_PORT"] = str(mcp_port)
 
     api = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "src.telecom_api.app:app",
+        [sys.executable, "-m", "uvicorn", "telecom_api.app:app",
          "--host", "127.0.0.1", "--port", str(api_port), "--log-level", "warning"],
         env=env,
     )
     mcp = subprocess.Popen(
-        [sys.executable, "-m", "src.mcp_servers.telecom.server"],
+        [sys.executable, "-m", "mcp_telecom.server"],
         env=env,
     )
     try:

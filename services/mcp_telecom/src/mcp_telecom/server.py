@@ -1,16 +1,20 @@
 """Telecom MCP server — exposes 14 telecom tools via Streamable HTTP on :8765.
 
 Run:
-    python -m src.mcp_servers.telecom.server
+    mcp-telecom
 
 Verify:
     npx @modelcontextprotocol/inspector http://localhost:8765/mcp
 """
 import os
 
-from mcp.server.fastmcp import FastMCP
+from dotenv import load_dotenv
 
-from src.mcp_servers.telecom.tools import register
+load_dotenv()
+
+from mcp.server.fastmcp import FastMCP  # noqa: E402
+
+from mcp_telecom.tools import register  # noqa: E402
 
 HOST = os.getenv("MCP_HOST", "127.0.0.1")
 PORT = int(os.getenv("MCP_PORT", "8765"))

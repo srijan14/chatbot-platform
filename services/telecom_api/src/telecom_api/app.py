@@ -1,7 +1,15 @@
 """Mock telecom internal REST API. Stands in for the 'Internal APIs (Bot 4)' box."""
-from fastapi import FastAPI
+import os
 
-from src.telecom_api.routes import accounts, plans, billing, usage, recharge, addons, sim, network, complaints
+from dotenv import load_dotenv
+
+load_dotenv()
+
+from fastapi import FastAPI  # noqa: E402
+
+from telecom_api.routes import (  # noqa: E402
+    accounts, plans, billing, usage, recharge, addons, sim, network, complaints,
+)
 
 app = FastAPI(title="Mock Telecom API", version="0.1.0")
 
@@ -20,3 +28,13 @@ app.include_router(addons.router)
 app.include_router(sim.router)
 app.include_router(network.router)
 app.include_router(complaints.router)
+
+
+def run() -> None:
+    import uvicorn
+    uvicorn.run(
+        "telecom_api.app:app",
+        host=os.getenv("TELECOM_API_HOST", "127.0.0.1"),
+        port=int(os.getenv("TELECOM_API_PORT", "8001")),
+        reload=os.getenv("TELECOM_API_RELOAD", "0") == "1",
+    )

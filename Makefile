@@ -1,19 +1,23 @@
 .PHONY: install seed reset run telecom_api mcp_telecom chatbot test smoke clean
 
 install:
-	python -m venv .venv && . .venv/bin/activate && pip install --upgrade pip && pip install -e ".[dev]"
+	python -m venv .venv && . .venv/bin/activate && pip install --upgrade pip && \
+	pip install -e . && \
+	pip install -e services/telecom_api && \
+	pip install -e services/mcp_telecom && \
+	pip install -e ".[dev]"
 
 seed:
-	. .venv/bin/activate && python -m data.seed.seed_telecom
+	. .venv/bin/activate && telecom-seed
 
 reset:
-	. .venv/bin/activate && python -m data.seed.seed_telecom --reset
+	. .venv/bin/activate && telecom-seed --reset
 
 telecom_api:
-	. .venv/bin/activate && uvicorn src.telecom_api.app:app --port 8001 --reload
+	. .venv/bin/activate && TELECOM_API_RELOAD=1 telecom-api
 
 mcp_telecom:
-	. .venv/bin/activate && python -m src.mcp_servers.telecom.server
+	. .venv/bin/activate && mcp-telecom
 
 chatbot:
 	. .venv/bin/activate && uvicorn src.chatbot.app:app --port 8000 --reload
@@ -32,4 +36,4 @@ smoke:
 	@curl -sS http://localhost:8000/health && echo
 
 clean:
-	rm -rf .venv data/telecom.db logs __pycache__ .pytest_cache
+	rm -rf .venv data/chatbot.db services/telecom_api/data/telecom.db logs __pycache__ .pytest_cache

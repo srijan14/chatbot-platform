@@ -2,7 +2,7 @@
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
 
-from src.telecom_api.db import get_conn, row_to_dict
+from telecom_api.db import get_conn, row_to_dict
 
 router = APIRouter(prefix="/customers/{customer_id}", tags=["usage"])
 

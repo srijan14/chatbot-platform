@@ -3,7 +3,7 @@ from typing import Optional
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
 
-from src.telecom_api.db import get_conn, rows_to_list
+from telecom_api.db import get_conn, rows_to_list
 
 router = APIRouter(tags=["network"])
 

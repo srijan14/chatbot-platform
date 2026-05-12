@@ -4,7 +4,7 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
-DB_PATH = os.getenv("TELECOM_DB_PATH", "data/telecom.db")
+DB_PATH = os.getenv("TELECOM_DB_PATH", "services/telecom_api/data/telecom.db")
 
 
 def _connect() -> sqlite3.Connection:

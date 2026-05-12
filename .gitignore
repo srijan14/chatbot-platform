@@ -4,7 +4,10 @@ __pycache__/
 .venv/
 venv/
 .env
-data/telecom.db
+data/chatbot.db
+data/chatbot.db-*
+services/telecom_api/data/telecom.db
+services/telecom_api/data/telecom.db-*
 logs/
 .pytest_cache/
 .mypy_cache/

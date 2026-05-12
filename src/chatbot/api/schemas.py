@@ -1,5 +1,6 @@
 """API request/response schemas for the chatbot service."""
 from typing import Optional
+
 from pydantic import BaseModel, Field
 
 
@@ -17,6 +18,12 @@ class ToolCallTraceOut(BaseModel):
     ok: bool
 
 
+class ClarificationOut(BaseModel):
+    question: str
+    expected: str = "free_text"
+    suggested_replies: list[str] = Field(default_factory=list)
+
+
 class ChatResponse(BaseModel):
     session_id: str
     trace_id: str
@@ -26,3 +33,5 @@ class ChatResponse(BaseModel):
     tool_calls: list[ToolCallTraceOut]
     latency_ms: int
     tokens: dict
+    awaiting_clarification: bool = False
+    clarification: Optional[ClarificationOut] = None

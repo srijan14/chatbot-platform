@@ -4,8 +4,8 @@ from typing import Optional
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, HTTPException
 
-from src.telecom_api.db import get_conn, rows_to_list, row_to_dict
-from src.telecom_api.models import PurchaseAddonRequest, PreviewResponse, ActionResponse
+from telecom_api.db import get_conn, rows_to_list, row_to_dict
+from telecom_api.models import PurchaseAddonRequest, PreviewResponse, ActionResponse
 
 router = APIRouter(tags=["addons"])
 

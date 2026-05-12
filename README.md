@@ -43,8 +43,8 @@ Three local processes:
 ## Quick start
 
 ```bash
-# 1. Install
-make install                              # creates .venv, pip install -e ".[dev]"
+# 1. Install — root chatbot + both services + dev deps
+make install                              # creates .venv, installs chatbot, telecom-api, mcp-telecom
 
 # 2. Configure credentials
 cp .env.example .env
@@ -114,24 +114,53 @@ RUN_INTEGRATION=1 .venv/bin/pytest tests/test_mcp_tools.py -v
 
 ```
 configs/bots/telecom_support.yaml   Bot config (system prompt, allowlist, MCP url, deployment name)
-data/seed/seed_telecom.py           SQLite seed (5 customers, 5 plans, 5 addons)
-src/telecom_api/                    Mock REST API on :8001
-src/mcp_servers/telecom/            MCP server on :8765 (14 tools)
-src/chatbot/
-  app.py                            FastAPI app entrypoint (creates AsyncAzureOpenAI client)
+data/chatbot.db                     Chatbot DB (sessions, messages, turn_logs) — gitignored
+services/
+  telecom_api/                      Mock REST API service (independent pyproject)
+    src/telecom_api/                  app, db, models, routes/, seed.py
+    data/telecom.db                   telecom SQLite — gitignored
+  mcp_telecom/                      MCP server service (independent pyproject)
+    src/mcp_telecom/                  server, tools, telecom_client
+src/chatbot/                        Main chatbot package
+  app.py                            FastAPI entrypoint (lifespan inits DB + LLM client)
   api/                              /chat handler + Pydantic schemas
-  core/                             Conversation Manager, LLM Orchestrator (Azure OpenAI),
-                                    Bot Config Store, Guardrails, Intent Classifier,
-                                    Response Formatter
-  router/                           Bot Router
-  skills/                           tool_call (active); rag/tag (stub slots)
+  core/                             Conversation Manager (DB-backed), LLM Orchestrator,
+                                    Bot Config Store, Guardrails, Intent Classifier
+  persistence/                      Async SQLAlchemy models + engine bootstrap
+  router/                           Bot Router (composes skills)
+  skills/                           clarification (active), tool_call (active); rag/tag stubs
   engines/tool_engine/              MCP client + MCP→OpenAI translator
-  observability/                    Structured JSONL turn logger
-  static/                           Demo web UI (vanilla JS)
+  observability/                    Structured turn logger (DB + optional JSONL)
+  static/                           Demo web UI (vanilla JS, persists session_id)
 ```
+
+Each service in `services/` is installed independently (`pip install -e services/telecom_api`),
+exposing entry-point scripts (`telecom-api`, `telecom-seed`, `mcp-telecom`). They communicate
+only over HTTP — zero shared imports.
+
+## Follow-up / clarification
+
+When the bot lacks a critical identifier (which plan, which bill, which SIM) it calls a
+synthetic `ask_clarification` tool. The orchestrator short-circuits that call and surfaces
+a structured signal on the response:
+
+```json
+{
+  "text": "Which plan would you like to switch to?",
+  "awaiting_clarification": true,
+  "clarification": {
+    "question": "Which plan would you like to switch to?",
+    "expected": "plan_id",
+    "suggested_replies": ["LITE_299", "PRO_599", "MAX_999"]
+  }
+}
+```
+
+The UI renders the bubble with a yellow accent and renders `suggested_replies` as clickable
+quick-reply chips. The flag is persisted on the session row in `data/chatbot.db` and cleared
+on the next user turn.
 
 ## Out of scope (POC)
 
-Real auth (customer_id flows in cleartext), multi-tenancy, response streaming,
-RAG/TAG/Web-Scrape skills (slots only), persistent conversation memory (in-process
-dict), production observability (JSONL only).
+Real auth (customer_id flows in cleartext), multi-tenancy, response streaming, RAG/TAG/Web-Scrape
+skills (slots only), alembic migrations (`create_all` on startup), Postgres (SQLite only).

@@ -3,8 +3,8 @@ import uuid
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
 
-from src.telecom_api.db import get_conn, rows_to_list, row_to_dict
-from src.telecom_api.models import PayBillRequest, ActionResponse
+from telecom_api.db import get_conn, rows_to_list, row_to_dict
+from telecom_api.models import PayBillRequest, ActionResponse
 
 router = APIRouter(prefix="/customers/{customer_id}", tags=["billing"])
 

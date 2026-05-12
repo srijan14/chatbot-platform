@@ -3,16 +3,17 @@
 For each turn we:
   1. Build the messages list: system prompt at position 0, then accumulated
      conversation history, then the new user message.
-  2. Call Azure OpenAI Chat Completions with the message list and tool schemas.
-  3. If `finish_reason == "tool_calls"`, execute every requested tool via MCP and
-     append a `role: "tool"` message per call to the history. Then loop.
+  2. Call Azure OpenAI Chat Completions with the message list and the union
+     of tool schemas contributed by each enabled skill.
+  3. If `finish_reason == "tool_calls"`, execute every requested tool through
+     the skill that owns it. The synthetic `ask_clarification` tool is
+     short-circuited locally: the loop returns immediately with
+     `awaiting_clarification=True`.
   4. Otherwise, return the assistant's text.
 
 Prompt caching on Azure OpenAI is automatic for gpt-4o once a prompt crosses
-~1024 tokens. We don't have to mark anything; we just keep the system prompt and
-tool list at fixed positions so the prefix is identical between turns. The
-`prompt_tokens_details.cached_tokens` field on the usage report tells us how
-much of the prompt was served from cache.
+~1024 tokens. We don't have to mark anything; we just keep the system prompt
+and tool list at fixed positions so the prefix is identical between turns.
 """
 from __future__ import annotations
 
@@ -25,8 +26,11 @@ from openai import AsyncAzureOpenAI
 
 from src.chatbot.core.bot_config_store import BotConfig
 from src.chatbot.core.conversation_manager import Session
-from src.chatbot.skills.tool_call_skill import ToolCallSkill
-from src.chatbot.observability.logger import new_trace_id, now_iso, log_turn
+from datetime import datetime, timezone
+
+from src.chatbot.observability.logger import new_trace_id
+from src.chatbot.skills.base import Skill
+from src.chatbot.skills.clarification_skill import TOOL_NAME as CLARIFY_TOOL_NAME
 
 
 @dataclass
@@ -36,6 +40,13 @@ class ToolCallTrace:
     duration_ms: int
     ok: bool
     output_chars: int
+
+
+@dataclass
+class ClarificationData:
+    question: str
+    expected: str = "free_text"
+    suggested_replies: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -49,6 +60,13 @@ class TurnResult:
     cached_tokens: int = 0
     latency_ms: int = 0
     capped: bool = False
+    awaiting_clarification: bool = False
+    clarification: ClarificationData | None = None
+    # Messages appended to session.history during this turn — the chat handler
+    # persists these via ConversationManager.persist_turn.
+    new_messages: list[dict[str, Any]] = field(default_factory=list)
+    # Turn-log payload (TurnLog row kwargs). The chat handler persists this.
+    log_payload: dict[str, Any] = field(default_factory=dict)
 
 
 def _serialize_assistant(msg: Any) -> dict:
@@ -83,7 +101,7 @@ class LLMOrchestrator:
         session: Session,
         user_message: str,
         bot_config: BotConfig,
-        skill: ToolCallSkill,
+        skills: list[Skill],
     ) -> TurnResult:
         trace_id = new_trace_id()
         t0 = time.perf_counter()
@@ -98,10 +116,15 @@ class LLMOrchestrator:
                 f"{system_prompt}"
             )
 
-        openai_tools = await skill.prepare_tools()
+        # Union of tool schemas across enabled skills.
+        openai_tools: list[dict] = []
+        for skill in skills:
+            openai_tools.extend(await skill.prepare_tools())
 
         # Append the new user turn so the model sees it on the first iteration.
-        session.history.append({"role": "user", "content": user_message})
+        user_msg = {"role": "user", "content": user_message}
+        session.history.append(user_msg)
+        pre_persist_index = len(session.history) - 1  # index of the new user msg
 
         result = TurnResult(trace_id=trace_id, text="", iterations=0)
 
@@ -109,8 +132,6 @@ class LLMOrchestrator:
             result.iterations = iteration + 1
 
             # Reasoning models (o-series) and chat models use different param names.
-            # Reasoning: max_completion_tokens (covers reasoning + output tokens),
-            # no `temperature` (only default 1.0 is allowed). Chat: max_tokens + temp.
             params: dict = {
                 "model": bot_config.llm_deployment,
                 "messages": [{"role": "system", "content": system_prompt}, *session.history],
@@ -143,6 +164,47 @@ class LLMOrchestrator:
                 result.text = msg.content or ""
                 break
 
+            # Detect ask_clarification before dispatching anything else. If
+            # present, we short-circuit: emit the synthetic tool result so the
+            # OpenAI envelope stays well-formed, set the clarification fields,
+            # and exit the loop.
+            clarify_call = next(
+                (tc for tc in msg.tool_calls if tc.function.name == CLARIFY_TOOL_NAME),
+                None,
+            )
+            if clarify_call is not None:
+                try:
+                    args = json.loads(clarify_call.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+                question = args.get("question", "Could you clarify?")
+                expected = args.get("expected", "free_text")
+                suggested = list(args.get("suggested_replies") or [])
+
+                result.text = question
+                result.awaiting_clarification = True
+                result.clarification = ClarificationData(
+                    question=question,
+                    expected=expected,
+                    suggested_replies=suggested,
+                )
+
+                # OpenAI requires every tool_call_id to have a matching tool message.
+                # If the model emitted multiple tool calls (it shouldn't per the
+                # system prompt, but just in case), close them all out.
+                for tc in msg.tool_calls:
+                    placeholder = (
+                        "(awaiting user response)"
+                        if tc.id == clarify_call.id
+                        else "(skipped: clarification pending)"
+                    )
+                    session.history.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": placeholder,
+                    })
+                break
+
             # Execute every tool the model requested in this round; each gets its
             # own `role:"tool"` message echoing the matching tool_call_id.
             for tc in msg.tool_calls:
@@ -151,10 +213,19 @@ class LLMOrchestrator:
                     args = json.loads(tc.function.arguments) if tc.function.arguments else {}
                 except json.JSONDecodeError:
                     args = {}
-                try:
-                    text, is_err = await skill.execute_tool(tc.function.name, args)
-                except Exception as e:
-                    text, is_err = f"Tool execution error: {e}", True
+
+                handler = next((s for s in skills if s.owns_tool(tc.function.name)), None)
+                if handler is None:
+                    text, is_err = (
+                        f"Tool '{tc.function.name}' is not available on this bot.",
+                        True,
+                    )
+                else:
+                    try:
+                        text, is_err = await handler.execute_tool(tc.function.name, args)
+                    except Exception as e:
+                        text, is_err = f"Tool execution error: {e}", True
+
                 duration_ms = int((time.perf_counter() - t_start) * 1000)
                 result.tool_calls.append(ToolCallTrace(
                     name=tc.function.name,
@@ -177,13 +248,14 @@ class LLMOrchestrator:
                 )
 
         result.latency_ms = int((time.perf_counter() - t0) * 1000)
+        result.new_messages = session.history[pre_persist_index:]
 
-        log_turn({
-            "ts": now_iso(),
+        result.log_payload = {
             "trace_id": result.trace_id,
             "session_id": session.session_id,
             "bot_id": bot_config.bot_id,
             "customer_id": session.customer_id,
+            "ts": datetime.now(timezone.utc),
             "iterations": result.iterations,
             "capped": result.capped,
             "tool_calls": [
@@ -196,6 +268,7 @@ class LLMOrchestrator:
             "cached_tokens": result.cached_tokens,
             "latency_ms": result.latency_ms,
             "response_chars": len(result.text),
-        })
+            "awaiting_clarification": result.awaiting_clarification,
+        }
 
         return result

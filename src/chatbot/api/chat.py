@@ -1,8 +1,14 @@
 """POST /chat handler — thin glue between HTTP and the orchestrator."""
 from fastapi import APIRouter, HTTPException, Request
 
-from src.chatbot.api.schemas import ChatRequest, ChatResponse, ToolCallTraceOut
+from src.chatbot.api.schemas import (
+    ChatRequest,
+    ChatResponse,
+    ClarificationOut,
+    ToolCallTraceOut,
+)
 from src.chatbot.core import guardrails
+from src.chatbot.observability.logger import log_turn
 
 router = APIRouter()
 
@@ -16,10 +22,27 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
     if err:
         raise HTTPException(400, err)
 
-    skill = state.router.get_tool_call_skill(req.bot_id)
-    session = state.conversations.get_or_create(req.session_id, customer_id=req.customer_id)
+    skills = state.router.get_skills(req.bot_id)
+    session = await state.conversations.get_or_create(
+        req.session_id, customer_id=req.customer_id, bot_id=req.bot_id
+    )
 
-    result = await state.orchestrator.run_turn(session, req.message, bot_config, skill)
+    result = await state.orchestrator.run_turn(session, req.message, bot_config, skills)
+
+    await state.conversations.persist_turn(
+        session,
+        result.new_messages,
+        awaiting_clarification=result.awaiting_clarification,
+    )
+    await log_turn(state.db_sessionmaker, result.log_payload)
+
+    clarification_out = None
+    if result.clarification is not None:
+        clarification_out = ClarificationOut(
+            question=result.clarification.question,
+            expected=result.clarification.expected,
+            suggested_replies=result.clarification.suggested_replies,
+        )
 
     return ChatResponse(
         session_id=req.session_id,
@@ -37,10 +60,12 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
             "completion": result.completion_tokens,
             "cached": result.cached_tokens,
         },
+        awaiting_clarification=result.awaiting_clarification,
+        clarification=clarification_out,
     )
 
 
 @router.post("/chat/reset")
 async def reset(req: ChatRequest, request: Request):
-    request.app.state.conversations.reset(req.session_id)
+    await request.app.state.conversations.reset(req.session_id)
     return {"ok": True}
