@@ -3,8 +3,8 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 
-from data.seed.seed_telecom import seed
-from src.telecom_api.app import app
+from telecom_api.app import app
+from telecom_api.seed import seed
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -12,7 +12,7 @@ def _seed_db(tmp_path_factory):
     db = tmp_path_factory.mktemp("data") / "telecom.db"
     os.environ["TELECOM_DB_PATH"] = str(db)
     # patch the cached module path before seeding
-    from src.telecom_api import db as db_mod
+    from telecom_api import db as db_mod
     db_mod.DB_PATH = str(db)
     seed(str(db))
     yield

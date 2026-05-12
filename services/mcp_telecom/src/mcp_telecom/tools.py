@@ -6,7 +6,7 @@ keep them clear and action-oriented.
 """
 from typing import Optional
 
-from src.mcp_servers.telecom import telecom_client as tc
+from mcp_telecom import telecom_client as tc
 
 
 def register(mcp):

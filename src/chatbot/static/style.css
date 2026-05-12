@@ -105,6 +105,34 @@ main {
   background: var(--assistant-bg);
 }
 
+.msg.clarify .bubble {
+  border-left: 3px solid #e8b94a;
+  background: #2a2418;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  max-width: 80ch;
+}
+
+.chip {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.chip:hover {
+  background: #2a3340;
+  border-color: var(--accent);
+}
+
 .msg .role {
   font-size: 11px;
   text-transform: uppercase;

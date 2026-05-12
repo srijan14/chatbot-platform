@@ -3,8 +3,8 @@ from typing import Optional
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, HTTPException
 
-from src.telecom_api.db import get_conn, row_to_dict, rows_to_list
-from src.telecom_api.models import ChangePlanRequest, PreviewResponse, ActionResponse
+from telecom_api.db import get_conn, row_to_dict, rows_to_list
+from telecom_api.models import ChangePlanRequest, PreviewResponse, ActionResponse
 
 router = APIRouter(tags=["plans"])
 

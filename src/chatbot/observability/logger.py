@@ -1,6 +1,7 @@
-"""Structured JSON-line logger for chatbot turns and tool calls.
+"""Structured logger for chatbot turns.
 
-Writes one JSONL line per turn to LOG_DIR/turns.jsonl plus stdout.
+Default sink: a `turn_logs` row in the chatbot DB. Optionally mirrors to
+`LOG_DIR/turns.jsonl` for grep-friendly tailing when `LOG_JSONL=1`.
 """
 from __future__ import annotations
 
@@ -14,6 +15,10 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
+
+from src.chatbot.persistence.models import TurnLog
 
 LOG_DIR = Path(os.getenv("LOG_DIR", "logs"))
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -44,11 +49,36 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
-def log_turn(payload: dict[str, Any]) -> None:
-    line = json.dumps(payload, default=str)
-    with TURNS_FILE.open("a") as f:
-        f.write(line + "\n")
-    _logger.info("turn", extra={"payload": payload})
+def _jsonl_enabled() -> bool:
+    return os.getenv("LOG_JSONL", "0") == "1"
+
+
+async def log_turn(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    payload: dict[str, Any],
+) -> None:
+    """Persist one turn. `payload` keys follow `TurnLog` columns; `tool_calls`
+    (if present) is JSON-encoded into `tool_calls_json`."""
+    tool_calls = payload.pop("tool_calls", None)
+    row_kwargs = dict(payload)
+    if tool_calls is not None:
+        row_kwargs["tool_calls_json"] = json.dumps(tool_calls, default=str)
+
+    async with sessionmaker() as s:
+        s.add(TurnLog(**row_kwargs))
+        await s.commit()
+
+    if _jsonl_enabled():
+        mirror = dict(payload)
+        if tool_calls is not None:
+            mirror["tool_calls"] = tool_calls
+        with TURNS_FILE.open("a") as f:
+            f.write(json.dumps(mirror, default=str) + "\n")
+
+    log_payload = dict(payload)
+    if tool_calls is not None:
+        log_payload["tool_calls"] = tool_calls
+    _logger.info("turn", extra={"payload": log_payload})
 
 
 @contextmanager

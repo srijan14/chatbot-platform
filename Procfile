@@ -1,3 +1,3 @@
-telecom_api: uvicorn src.telecom_api.app:app --port 8001 --reload
-mcp_telecom: python -m src.mcp_servers.telecom.server
+telecom_api: telecom-api
+mcp_telecom: mcp-telecom
 chatbot: uvicorn src.chatbot.app:app --port 8000 --reload

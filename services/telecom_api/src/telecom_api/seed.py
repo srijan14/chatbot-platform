@@ -4,8 +4,8 @@ Five demo customers, each engineered for a distinct demo scenario. See the plan
 for the narrative of each customer (CUST001..CUST005).
 
 Run:
-    python -m data.seed.seed_telecom            # drops + recreates (idempotent)
-    python -m data.seed.seed_telecom --reset    # explicit (same behavior)
+    telecom-seed                                # drops + recreates (idempotent)
+    telecom-seed --reset                        # explicit (same behavior)
 """
 import argparse
 import os
@@ -13,7 +13,11 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-DB_PATH = os.getenv("TELECOM_DB_PATH", "data/telecom.db")
+from dotenv import load_dotenv
+
+load_dotenv()
+
+DB_PATH = os.getenv("TELECOM_DB_PATH", "services/telecom_api/data/telecom.db")
 
 
 # ---------------------------------------------------------------------------

@@ -8,11 +8,22 @@ const els = {
   status: document.getElementById("status"),
 };
 
-const SESSION_ID = "demo-" + Math.random().toString(36).slice(2, 10);
+// Persist session_id so reload survives a chatbot restart (matters for the
+// DB-backed history test). New tabs/windows start fresh because they share
+// localStorage; clear via the Reset button.
+function ensureSessionId() {
+  let id = localStorage.getItem("chatbot_session_id");
+  if (!id) {
+    id = "demo-" + Math.random().toString(36).slice(2, 10);
+    localStorage.setItem("chatbot_session_id", id);
+  }
+  return id;
+}
+let SESSION_ID = ensureSessionId();
 
-function addMessage(role, text, trace, meta) {
+function addMessage(role, text, trace, meta, opts = {}) {
   const wrapper = document.createElement("div");
-  wrapper.className = `msg ${role}`;
+  wrapper.className = `msg ${role}` + (opts.clarify ? " clarify" : "");
   const roleLabel = document.createElement("div");
   roleLabel.className = "role";
   roleLabel.textContent = role === "user" ? "You" : "TelcoBot";
@@ -21,6 +32,20 @@ function addMessage(role, text, trace, meta) {
   bubble.textContent = text;
   wrapper.appendChild(roleLabel);
   wrapper.appendChild(bubble);
+
+  if (opts.suggestedReplies && opts.suggestedReplies.length) {
+    const chips = document.createElement("div");
+    chips.className = "chips";
+    for (const reply of opts.suggestedReplies) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "chip";
+      b.textContent = reply;
+      b.addEventListener("click", () => send(reply));
+      chips.appendChild(b);
+    }
+    wrapper.appendChild(chips);
+  }
 
   if (trace && trace.length) {
     const det = document.createElement("details");
@@ -90,8 +115,17 @@ async function send(message) {
     const meta = `${data.iterations} iter · ${data.latency_ms}ms · ` +
                  `${data.tokens.prompt} in / ${data.tokens.completion} out` +
                  (data.tokens.cached ? ` · ${data.tokens.cached} cached` : "");
-    addMessage("assistant", data.text || "(empty response)", data.tool_calls, meta);
-    setStatus(`Ready. Last turn: ${data.latency_ms}ms.`);
+    const opts = {};
+    if (data.awaiting_clarification) {
+      opts.clarify = true;
+      opts.suggestedReplies = (data.clarification && data.clarification.suggested_replies) || [];
+    }
+    addMessage("assistant", data.text || "(empty response)", data.tool_calls, meta, opts);
+    setStatus(
+      data.awaiting_clarification
+        ? `Awaiting your clarification.`
+        : `Ready. Last turn: ${data.latency_ms}ms.`
+    );
   } catch (e) {
     thinking.remove();
     addMessage("assistant", "Error: " + e.message);
@@ -125,6 +159,9 @@ els.reset.addEventListener("click", async () => {
       }),
     });
   } catch (_) {}
+  // Rotate to a fresh session_id locally too, so the next message starts clean.
+  localStorage.removeItem("chatbot_session_id");
+  SESSION_ID = ensureSessionId();
 });
 
 els.customer.addEventListener("change", () => {
