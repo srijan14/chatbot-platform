@@ -114,9 +114,16 @@ class LLMOrchestrator:
             len(session.history), truncate(user_message, 120),
         )
 
-        # Inject the authenticated customer into the system prompt so the model
-        # passes the right customer_id without nagging the user for it.
+        # Build the system prompt in three layers:
+        #   1. bot persona (from YAML)
+        #   2. additions contributed by each enabled skill (e.g. how to use
+        #      ask_clarification — the platform-generic rule lives with the skill)
+        #   3. authenticated-customer context (per turn)
         system_prompt = bot_config.system_prompt
+        sys_addons = [s.system_prompt_addition() for s in skills]
+        sys_addons = [a for a in sys_addons if a]
+        if sys_addons:
+            system_prompt = system_prompt.rstrip() + "\n\n" + "\n\n".join(sys_addons)
         if session.customer_id:
             system_prompt = (
                 f"Current authenticated customer: customer_id={session.customer_id}. "

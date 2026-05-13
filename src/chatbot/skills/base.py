@@ -1,4 +1,4 @@
-"""Base Skill class. Every pluggable skill (tool_call, rag, tag, web_scrape) extends this."""
+"""Base Skill class. Every pluggable skill (tool_call, clarification, rag, ...) extends this."""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -9,7 +9,7 @@ class Skill(ABC):
 
     @abstractmethod
     async def prepare_tools(self) -> list[dict]:
-        """Return the Anthropic-shaped tool definitions this skill contributes."""
+        """Return the OpenAI-shaped tool definitions this skill contributes."""
 
     @abstractmethod
     async def execute_tool(self, name: str, arguments: dict) -> tuple[str, bool]:
@@ -18,3 +18,13 @@ class Skill(ABC):
     @abstractmethod
     def owns_tool(self, name: str) -> bool:
         """Whether this skill can handle the named tool."""
+
+    def system_prompt_addition(self) -> str | None:
+        """Optional: text the skill contributes to the system prompt at runtime.
+
+        The orchestrator concatenates non-None additions from every enabled
+        skill into the system prompt before each LLM call. This is the
+        platform's way to let a skill teach the model how to invoke it,
+        without each bot's YAML having to repeat the same boilerplate.
+        """
+        return None

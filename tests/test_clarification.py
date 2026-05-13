@@ -9,7 +9,11 @@ import pytest
 from src.chatbot.core.bot_config_store import BotConfig
 from src.chatbot.core.conversation_manager import Session
 from src.chatbot.core.llm_orchestrator import LLMOrchestrator
-from src.chatbot.skills.clarification_skill import TOOL_NAME, ClarificationSkill
+from src.chatbot.skills.clarification_skill import (
+    DEFAULT_EXPECTED_VALUES,
+    TOOL_NAME,
+    ClarificationSkill,
+)
 
 
 def _bot_config() -> BotConfig:
@@ -24,9 +28,10 @@ def _bot_config() -> BotConfig:
         temperature=0.2,
         max_tool_iterations=3,
         system_prompt="you are a test bot",
-        enabled_skills=["tool_call"],
+        enabled_skills=["tool_call", "clarification"],
         mcp_servers=[],
         tool_allowlist=[],
+        clarification_expected_values=None,
         max_input_chars=2000,
         pii_redaction_in_logs=True,
     )
@@ -139,3 +144,35 @@ async def test_clarification_skill_exposes_tool_schema():
     assert "question" in params["required"]
     assert skill.owns_tool(TOOL_NAME)
     assert not skill.owns_tool("get_customer_profile")
+
+
+@pytest.mark.asyncio
+async def test_default_expected_enum_is_domain_agnostic():
+    """Platform default must not leak telecom-specific tokens."""
+    skill = ClarificationSkill()
+    tools = await skill.prepare_tools()
+    enum_values = tools[0]["function"]["parameters"]["properties"]["expected"]["enum"]
+    assert enum_values == DEFAULT_EXPECTED_VALUES
+    for telecom_token in ("plan_id", "bill_id", "addon_id", "phone_number"):
+        assert telecom_token not in enum_values, (
+            f"{telecom_token!r} leaked into platform default — should come from bot YAML"
+        )
+
+
+@pytest.mark.asyncio
+async def test_expected_values_configurable_per_bot():
+    """A bot can supply its own domain enum via YAML; the schema reflects it."""
+    domain = ["free_text", "plan_id", "bill_id"]
+    skill = ClarificationSkill(expected_values=domain)
+    tools = await skill.prepare_tools()
+    assert tools[0]["function"]["parameters"]["properties"]["expected"]["enum"] == domain
+
+
+def test_clarification_skill_contributes_system_prompt():
+    """Generic clarification policy must come from the skill, not from each bot's YAML."""
+    skill = ClarificationSkill()
+    addition = skill.system_prompt_addition()
+    assert addition is not None
+    # The generic rule mentions the tool name + the never-with-another-tool guarantee.
+    assert "ask_clarification" in addition
+    assert "another tool" in addition.lower()
