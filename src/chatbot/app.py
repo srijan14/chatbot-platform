@@ -1,4 +1,5 @@
 """Chatbot service entry point. FastAPI app exposing /chat + the demo web page."""
+import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -42,10 +43,21 @@ async def lifespan(app: FastAPI):
     app.state.conversations = ConversationManager(sessionmaker)
 
     # Pre-warm the default bot's config and tool list — catches misconfig at boot
-    # rather than at the first chat request.
+    # rather than at the first chat request. Tool fetch is best-effort: if a
+    # downstream MCP server is down, log clearly and let the first chat request
+    # retry, rather than refusing to start the chatbot at all.
     app.state.router.get_config("telecom_support")
     for skill in app.state.router.get_skills("telecom_support"):
-        await skill.prepare_tools()
+        try:
+            await skill.prepare_tools()
+        except Exception as exc:
+            logging.getLogger("chatbot.startup").warning(
+                "skill %s prepare_tools failed at boot (%s: %s); will retry on first chat request. "
+                "If this is the telecom MCP server, start it with: `mcp-telecom`",
+                getattr(skill, "name", type(skill).__name__),
+                type(exc).__name__,
+                exc,
+            )
 
     try:
         yield
