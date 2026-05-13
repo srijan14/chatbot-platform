@@ -402,6 +402,22 @@ def seed(db_path: str) -> None:
     conn.close()
 
 
+def ensure_seeded(db_path: str = DB_PATH) -> bool:
+    """Seed the DB on first run. Returns True if seeding happened, False if already present."""
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='plans'"
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is not None:
+        return False
+    seed(db_path)
+    return True
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Seed telecom.db with demo data.")
     parser.add_argument("--reset", action="store_true",

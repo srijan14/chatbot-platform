@@ -10,8 +10,15 @@ from fastapi import FastAPI  # noqa: E402
 from telecom_api.routes import (  # noqa: E402
     accounts, plans, billing, usage, recharge, addons, sim, network, complaints,
 )
+from telecom_api.seed import ensure_seeded  # noqa: E402
 
 app = FastAPI(title="Mock Telecom API", version="0.1.0")
+
+
+@app.on_event("startup")
+def _seed_if_empty() -> None:
+    if ensure_seeded():
+        print("[telecom_api] seeded empty database on startup")
 
 
 @app.get("/health")
