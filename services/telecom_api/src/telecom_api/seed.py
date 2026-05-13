@@ -167,35 +167,47 @@ def _days(n: int) -> str:
 
 PLANS = [
     # plan_id, name, category, fee, data_gb, voice_min, sms
+    ("ESSENTIAL_149", "Essential 149",  "prepaid",   149.0,  20.0,   100,   50),
+    ("SMART_199",     "Smart 199",      "prepaid",   199.0,  45.0,   200,   50),  # cycle total ~45GB
+    ("SUPER_249",     "Super 249",      "prepaid",   249.0,  60.0,   300,  100),
     ("LITE_299",      "Lite 299",       "postpaid",  299.0,  10.0,   500,  100),
-    ("SMART_199",     "Smart 199",      "prepaid",   199.0,   1.5,   200,   50),  # ~1.5GB/day for ~28 days; we model as 45GB cycle
     ("PRO_599",       "Pro 599",        "postpaid",  599.0,  50.0,  2000,  500),
+    ("PREMIUM_799",   "Premium 799",    "postpaid",  799.0, 100.0,  3000,  750),
     ("MAX_999",       "Max 999",        "postpaid",  999.0, 150.0,  5000, 1000),
+    ("FAMILY_1299",   "Family 1299",    "postpaid", 1299.0, 200.0,  8000, 1500),
+    ("DATA_LITE_199", "Data Lite 199",  "data-only", 199.0,  30.0,     0,    0),
     ("DATA_ONLY_399", "Data Only 399",  "data-only", 399.0,  75.0,     0,    0),
 ]
-
-# For Smart 199 we set data_quota_gb to the cycle total (45GB) to make 92% used realistic.
-# Override here:
-PLANS[1] = ("SMART_199", "Smart 199", "prepaid", 199.0, 45.0, 200, 50)
 
 
 ADDONS = [
     # addon_id, name, category, price, validity_days, description
-    ("DATA_5GB_99",          "Data Pack 5GB",         "data",          99.0,  28, "Extra 5GB high-speed data, valid 28 days."),
-    ("DATA_20GB_249",        "Data Pack 20GB",        "data",         249.0,  28, "Extra 20GB high-speed data, valid 28 days."),
-    ("ROAM_INTL_7D_499",     "Intl Roaming 7-day",    "roaming",      499.0,   7, "International roaming with 1GB data + 100 mins, 7 days."),
-    ("INTL_CALL_100MIN_199", "Intl Calling 100 min",  "international",199.0,  30, "100 minutes of outgoing international calls, 30 days."),
-    ("VOICE_UNL_99",         "Unlimited Voice 1-day", "voice",         99.0,   1, "Unlimited local + STD voice for 24 hours."),
+    ("DATA_5GB_99",          "Data Pack 5GB",          "data",          99.0,  28, "Extra 5GB high-speed data, valid 28 days."),
+    ("DATA_10GB_149",        "Data Pack 10GB",         "data",         149.0,  28, "Extra 10GB high-speed data, valid 28 days."),
+    ("DATA_20GB_249",        "Data Pack 20GB",         "data",         249.0,  28, "Extra 20GB high-speed data, valid 28 days."),
+    ("DATA_50GB_499",        "Data Pack 50GB",         "data",         499.0,  28, "Extra 50GB high-speed data, valid 28 days."),
+    ("ROAM_REGIONAL_7D_199", "Regional Roaming 7-day", "roaming",      199.0,   7, "Regional (SAARC) roaming with 500MB data + 50 mins, 7 days."),
+    ("ROAM_INTL_7D_499",     "Intl Roaming 7-day",     "roaming",      499.0,   7, "International roaming with 1GB data + 100 mins, 7 days."),
+    ("ROAM_INTL_30D_1499",   "Intl Roaming 30-day",    "roaming",     1499.0,  30, "International roaming with 5GB data + 500 mins, 30 days."),
+    ("INTL_CALL_100MIN_199", "Intl Calling 100 min",   "international", 199.0, 30, "100 minutes of outgoing international calls, 30 days."),
+    ("INTL_CALL_500MIN_799", "Intl Calling 500 min",   "international", 799.0, 30, "500 minutes of outgoing international calls, 30 days."),
+    ("VOICE_UNL_99",         "Unlimited Voice 1-day",  "voice",          99.0,  1, "Unlimited local + STD voice for 24 hours."),
+    ("VOICE_UNL_7D_299",     "Unlimited Voice 7-day",  "voice",         299.0,  7, "Unlimited local + STD voice for 7 days."),
+    ("SMS_500_49",           "SMS Pack 500",           "sms",            49.0, 30, "500 SMS, valid 30 days."),
 ]
 
 
 CUSTOMERS = [
     # customer_id, name, phone, email, account_type, status, prepaid_balance, area_code
-    ("CUST001", "Aarav Mehta",   "+919900000001", "aarav@example.com",  "postpaid", "active",   0.0,   "BLR-01"),
-    ("CUST002", "Priya Iyer",    "+919900000002", "priya@example.com",  "prepaid",  "active",  35.0,   "BLR-02"),
-    ("CUST003", "Rohan Kapoor",  "+919900000003", "rohan@example.com",  "postpaid", "suspended",0.0,   "DEL-01"),
-    ("CUST004", "Sneha Reddy",   "+919900000004", "sneha@example.com",  "prepaid",  "active", 120.0,   "HYD-03"),
-    ("CUST005", "Vikram Singh",  "+919900000005", "vikram@example.com", "postpaid", "active",   0.0,   "BLR-04"),
+    ("CUST001", "Aarav Mehta",    "+919900000001", "aarav@example.com",  "postpaid", "active",     0.0, "BLR-01"),
+    ("CUST002", "Priya Iyer",     "+919900000002", "priya@example.com",  "prepaid",  "active",    35.0, "BLR-02"),
+    ("CUST003", "Rohan Kapoor",   "+919900000003", "rohan@example.com",  "postpaid", "suspended",  0.0, "DEL-01"),
+    ("CUST004", "Sneha Reddy",    "+919900000004", "sneha@example.com",  "prepaid",  "active",   120.0, "HYD-03"),
+    ("CUST005", "Vikram Singh",   "+919900000005", "vikram@example.com", "postpaid", "active",     0.0, "BLR-04"),
+    # New clarification-focused personas:
+    ("CUST006", "Ananya Sharma",  "+919900000006", "ananya@example.com", "postpaid", "active",     0.0, "MUM-01"),  # multi-bill
+    ("CUST007", "Karan Malhotra", "+919900000007", "karan@example.com",  "postpaid", "active",     0.0, "BLR-03"),  # multi-addon
+    ("CUST008", "Meera Joshi",    "+919900000008", "meera@example.com",  "prepaid",  "active",    75.0, "PUN-02"),  # multi-complaint
 ]
 
 
@@ -206,6 +218,9 @@ SUBSCRIPTIONS = [
     ("CUST003", "LITE_299",      -40,  20, 1),
     ("CUST004", "SMART_199",      -5,  23, 0),
     ("CUST005", "PRO_599",       -20,  40, 1),
+    ("CUST006", "PRO_599",       -40,  10, 1),
+    ("CUST007", "PREMIUM_799",   -10,  20, 1),
+    ("CUST008", "SMART_199",     -15,  15, 1),
 ]
 
 
@@ -216,19 +231,35 @@ USAGE = [
     ("CUST003",  4.2,  150,  10, -25, 5),
     ("CUST004", 12.0,   80,  20,  -5, 23),
     ("CUST005", 28.5,  600, 200, -20, 10),
+    ("CUST006", 35.0, 1200, 300, -20, 10),
+    ("CUST007", 88.0, 1800, 400, -10, 20),   # 88% of PREMIUM 100GB — primes "buy more data"
+    ("CUST008", 20.0,  180,  40, -15, 15),
 ]
 
 
 # bill_id, customer_id, amount, issue_offset, due_offset, status, paid_offset(or None)
 BILLS = [
-    ("BILL001A", "CUST001", 599.0, -35, -5,  "paid",    -7),
-    ("BILL001B", "CUST001", 599.0,  -5, 25,  "pending", None),
+    # CUST001 — control
+    ("BILL001A", "CUST001", 599.0, -35,  -5, "paid",    -7),
+    ("BILL001B", "CUST001", 599.0,  -5,  25, "pending", None),
 
+    # CUST003 — overdue scenario (drives pay-to-unsuspend flow)
     ("BILL003A", "CUST003", 299.0, -42, -12, "overdue", None),
     ("BILL003B", "CUST003", 299.0, -12,  18, "pending", None),
 
+    # CUST005 — control (all paid)
     ("BILL005A", "CUST005", 599.0, -50, -20, "paid",   -22),
-    ("BILL005B", "CUST005", 599.0, -20, 10,  "paid",   -15),
+    ("BILL005B", "CUST005", 599.0, -20,  10, "paid",   -15),
+
+    # CUST006 — MULTI-BILL clarification: 3 outstanding bills with different shapes.
+    # "pay my bill" should trigger ask_clarification on bill_id.
+    ("BILL006A", "CUST006", 599.0, -40,  -3, "overdue", None),   # last cycle, 3 days overdue
+    ("BILL006B", "CUST006", 599.0, -10,  20, "pending", None),   # current cycle base
+    ("BILL006C", "CUST006", 350.0,  -5,   5, "pending", None),   # mid-cycle addon top-ups
+
+    # CUST007 — single pending bill (high because of addons), one paid
+    ("BILL007A", "CUST007", 950.0, -10,  20, "pending", None),
+    ("BILL007B", "CUST007", 799.0, -40, -10, "paid",    -12),
 ]
 
 
@@ -236,20 +267,43 @@ BILLS = [
 OUTAGES = [
     ("OUT_BLR04_1", "BLR-04", "unplanned", -6,  None, "Fiber cut affecting voice and data in BLR-04 sectors."),
     ("OUT_DEL02_1", "DEL-02", "planned",   -72, -48,  "Scheduled tower maintenance (resolved)."),
+    ("OUT_MUM01_1", "MUM-01", "planned",   -2,   22,  "Scheduled fiber backbone upgrade in MUM-01."),
 ]
 
 
-# Sample existing customer addon: CUST001 has an active VOICE_UNL_99
 CUSTOMER_ADDONS = [
     # customer_id, addon_id, purchased_offset_h, expires_offset_h, status
-    ("CUST001", "VOICE_UNL_99", -2, 22, "active"),
+
+    # CUST001 — single addon, control
+    ("CUST001", "VOICE_UNL_99",       -2,   22,   "active"),
+
+    # CUST007 — MULTI-ADDON ACTIVE: 4 active addons of different categories.
+    # Useful for "what addons do I have?" and for catalog-pick clarification
+    # when the user asks "buy more data" (4 data options exist).
+    ("CUST007", "DATA_50GB_499",     -120,  552,  "active"),   # bought 5d ago, ~23d left
+    ("CUST007", "ROAM_INTL_7D_499",   -36,  132,  "active"),   # 1.5d ago, ~5d left
+    ("CUST007", "VOICE_UNL_7D_299",   -24,  144,  "active"),   # 1d ago, ~6d left
+    ("CUST007", "SMS_500_49",        -240,  480,  "active"),   # 10d ago, ~20d left
 ]
 
 
-# Pre-existing complaint for CUST005
 COMPLAINTS = [
     # ticket_id, customer_id, category, description, status, sla_hours, created_offset_h, updated_offset_h
+
+    # CUST005 — existing in_progress network ticket
     ("TKT-2026-0042", "CUST005", "network", "Calls dropping repeatedly in evening hours.", "in_progress", 48, -30, -2),
+
+    # CUST001 — resolved history (so "any open issues?" can return a clean answer)
+    ("TKT-2026-0053", "CUST001", "billing", "Disputed a ₹99 charge - resolved with credit.", "resolved", 48, -240, -180),
+
+    # CUST006 — one open billing ticket (relevant when discussing the multi-bill issue)
+    ("TKT-2026-0054", "CUST006", "billing", "Bills seem higher than expected this cycle.", "open", 72, -48, -48),
+
+    # CUST008 — MULTI-COMPLAINT: 3 open tickets across categories.
+    # "what's the status of my complaint" must call ask_clarification on ticket_id.
+    ("TKT-2026-0050", "CUST008", "network", "Slow internet during evenings.",          "in_progress", 48, -72, -6),
+    ("TKT-2026-0051", "CUST008", "billing", "Got charged twice for last month.",        "open",        72, -24, -24),
+    ("TKT-2026-0052", "CUST008", "service", "Customer service rep was unprofessional.", "open",        96, -8,  -8),
 ]
 
 
