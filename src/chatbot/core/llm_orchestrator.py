@@ -28,9 +28,11 @@ from src.chatbot.core.bot_config_store import BotConfig
 from src.chatbot.core.conversation_manager import Session
 from datetime import datetime, timezone
 
-from src.chatbot.observability.logger import new_trace_id
+from src.chatbot.observability.logger import get_logger, new_trace_id, truncate
 from src.chatbot.skills.base import Skill
 from src.chatbot.skills.clarification_skill import TOOL_NAME as CLARIFY_TOOL_NAME
+
+_log = get_logger("orch")
 
 
 @dataclass
@@ -106,6 +108,12 @@ class LLMOrchestrator:
         trace_id = new_trace_id()
         t0 = time.perf_counter()
 
+        _log.info(
+            "[orch] TURN-START trace=%s session=%s customer=%s history_len_before=%d message=%r",
+            trace_id, session.session_id, session.customer_id,
+            len(session.history), truncate(user_message, 120),
+        )
+
         # Inject the authenticated customer into the system prompt so the model
         # passes the right customer_id without nagging the user for it.
         system_prompt = bot_config.system_prompt
@@ -118,8 +126,19 @@ class LLMOrchestrator:
 
         # Union of tool schemas across enabled skills.
         openai_tools: list[dict] = []
+        per_skill_counts: list[tuple[str, int]] = []
         for skill in skills:
-            openai_tools.extend(await skill.prepare_tools())
+            schemas = await skill.prepare_tools()
+            per_skill_counts.append((skill.name, len(schemas)))
+            openai_tools.extend(schemas)
+        _log.info(
+            "[orch] TOOLS-ASSEMBLED trace=%s skills=%s total=%d",
+            trace_id, per_skill_counts, len(openai_tools),
+        )
+        _log.debug(
+            "[orch] tool_names trace=%s names=%s",
+            trace_id, [t["function"]["name"] for t in openai_tools],
+        )
 
         # Append the new user turn so the model sees it on the first iteration.
         user_msg = {"role": "user", "content": user_message}
@@ -130,6 +149,10 @@ class LLMOrchestrator:
 
         for iteration in range(bot_config.max_tool_iterations):
             result.iterations = iteration + 1
+            _log.info(
+                "[orch] LLM-CALL trace=%s iter=%d history_len=%d model=%s",
+                trace_id, iteration + 1, len(session.history), bot_config.llm_deployment,
+            )
 
             # Reasoning models (o-series) and chat models use different param names.
             params: dict = {
@@ -151,17 +174,37 @@ class LLMOrchestrator:
             finish_reason = choice.finish_reason
 
             usage = getattr(response, "usage", None)
+            iter_prompt = iter_completion = iter_cached = 0
             if usage is not None:
-                result.prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
-                result.completion_tokens += getattr(usage, "completion_tokens", 0) or 0
+                iter_prompt = getattr(usage, "prompt_tokens", 0) or 0
+                iter_completion = getattr(usage, "completion_tokens", 0) or 0
                 details = getattr(usage, "prompt_tokens_details", None)
                 if details is not None:
-                    result.cached_tokens += getattr(details, "cached_tokens", 0) or 0
+                    iter_cached = getattr(details, "cached_tokens", 0) or 0
+                result.prompt_tokens += iter_prompt
+                result.completion_tokens += iter_completion
+                result.cached_tokens += iter_cached
 
-            session.history.append(_serialize_assistant(msg))
+            n_tool_calls = len(msg.tool_calls or [])
+            _log.info(
+                "[orch] LLM-RESPONSE trace=%s iter=%d finish=%s tool_calls=%d "
+                "tokens=in:%d/out:%d/cached:%d",
+                trace_id, iteration + 1, finish_reason, n_tool_calls,
+                iter_prompt, iter_completion, iter_cached,
+            )
+            assistant_record = _serialize_assistant(msg)
+            _log.debug(
+                "[orch] assistant_message trace=%s payload=%s",
+                trace_id, truncate(assistant_record, 400),
+            )
+            session.history.append(assistant_record)
 
             if finish_reason != "tool_calls" or not msg.tool_calls:
                 result.text = msg.content or ""
+                _log.info(
+                    "[orch] FINAL-TEXT trace=%s chars=%d text=%r",
+                    trace_id, len(result.text), truncate(result.text, 200),
+                )
                 break
 
             # Detect ask_clarification before dispatching anything else. If
@@ -189,6 +232,11 @@ class LLMOrchestrator:
                     suggested_replies=suggested,
                 )
 
+                _log.info(
+                    "[orch] CLARIFY-INTERCEPT trace=%s id=%s question=%r expected=%s suggested=%s",
+                    trace_id, clarify_call.id, truncate(question, 120), expected, suggested,
+                )
+
                 # OpenAI requires every tool_call_id to have a matching tool message.
                 # If the model emitted multiple tool calls (it shouldn't per the
                 # system prompt, but just in case), close them all out.
@@ -203,6 +251,10 @@ class LLMOrchestrator:
                         "tool_call_id": tc.id,
                         "content": placeholder,
                     })
+                    _log.debug(
+                        "[orch] tool_placeholder trace=%s tool_call_id=%s content=%r",
+                        trace_id, tc.id, placeholder,
+                    )
                 break
 
             # Execute every tool the model requested in this round; each gets its
@@ -214,11 +266,20 @@ class LLMOrchestrator:
                 except json.JSONDecodeError:
                     args = {}
 
+                _log.info(
+                    "[orch] TOOL-DISPATCH trace=%s iter=%d name=%s id=%s args=%s",
+                    trace_id, iteration + 1, tc.function.name, tc.id, truncate(args, 200),
+                )
+
                 handler = next((s for s in skills if s.owns_tool(tc.function.name)), None)
                 if handler is None:
                     text, is_err = (
                         f"Tool '{tc.function.name}' is not available on this bot.",
                         True,
+                    )
+                    _log.warning(
+                        "[orch] tool_unhandled trace=%s name=%s — no skill owns it",
+                        trace_id, tc.function.name,
                     )
                 else:
                     try:
@@ -227,6 +288,11 @@ class LLMOrchestrator:
                         text, is_err = f"Tool execution error: {e}", True
 
                 duration_ms = int((time.perf_counter() - t_start) * 1000)
+                _log.info(
+                    "[orch] TOOL-RESULT  trace=%s iter=%d name=%s duration=%dms ok=%s output=%r",
+                    trace_id, iteration + 1, tc.function.name, duration_ms,
+                    not is_err, truncate(text, 200),
+                )
                 result.tool_calls.append(ToolCallTrace(
                     name=tc.function.name,
                     input=args,
@@ -246,9 +312,21 @@ class LLMOrchestrator:
                 result.text = last.get("content") or (
                     "(I hit my tool-iteration cap. Please clarify or try again.)"
                 )
+            _log.warning(
+                "[orch] CAP-HIT trace=%s max_iterations=%d",
+                trace_id, bot_config.max_tool_iterations,
+            )
 
         result.latency_ms = int((time.perf_counter() - t0) * 1000)
         result.new_messages = session.history[pre_persist_index:]
+
+        _log.info(
+            "[orch] TURN-END   trace=%s iter=%d latency=%dms awaiting_clarification=%s "
+            "new_messages=%d tokens=in:%d/out:%d/cached:%d",
+            trace_id, result.iterations, result.latency_ms,
+            result.awaiting_clarification, len(result.new_messages),
+            result.prompt_tokens, result.completion_tokens, result.cached_tokens,
+        )
 
         result.log_payload = {
             "trace_id": result.trace_id,

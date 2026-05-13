@@ -8,18 +8,26 @@ from src.chatbot.api.schemas import (
     ToolCallTraceOut,
 )
 from src.chatbot.core import guardrails
-from src.chatbot.observability.logger import log_turn
+from src.chatbot.observability.logger import get_logger, log_turn, truncate
 
 router = APIRouter()
+_log = get_logger("chat")
 
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, request: Request) -> ChatResponse:
     state = request.app.state
+
+    _log.info(
+        "[chat] REQUEST  session=%s customer=%s bot=%s message=%r",
+        req.session_id, req.customer_id, req.bot_id, truncate(req.message, 120),
+    )
+
     bot_config = state.router.get_config(req.bot_id)
 
     err = guardrails.check_input(req.message, bot_config)
     if err:
+        _log.warning("[chat] guardrail rejected session=%s reason=%s", req.session_id, err)
         raise HTTPException(400, err)
 
     skills = state.router.get_skills(req.bot_id)
@@ -35,6 +43,14 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
         awaiting_clarification=result.awaiting_clarification,
     )
     await log_turn(state.db_sessionmaker, result.log_payload)
+
+    _log.info(
+        "[chat] RESPONSE session=%s trace=%s iter=%d latency=%dms tool_calls=%d "
+        "awaiting_clarification=%s tokens=in:%d/out:%d/cached:%d",
+        req.session_id, result.trace_id, result.iterations, result.latency_ms,
+        len(result.tool_calls), result.awaiting_clarification,
+        result.prompt_tokens, result.completion_tokens, result.cached_tokens,
+    )
 
     clarification_out = None
     if result.clarification is not None:

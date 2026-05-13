@@ -24,7 +24,10 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
+from src.chatbot.observability.logger import get_logger
 from src.chatbot.persistence.models import MessageRow, SessionRow
+
+_log = get_logger("conv")
 
 # Payload schema version stored inside MessageRow.payload as `_v`.
 PAYLOAD_VERSION = 1
@@ -71,6 +74,10 @@ class ConversationManager:
                 )
                 s.add(row)
                 await s.commit()
+                _log.info(
+                    "[conv] NEW session=%s customer=%s bot=%s",
+                    session_id, customer_id, bot_id,
+                )
                 return Session(
                     session_id=session_id,
                     customer_id=customer_id,
@@ -83,9 +90,14 @@ class ConversationManager:
                 await s.execute(
                     delete(MessageRow).where(MessageRow.session_id == session_id)
                 )
+                old_customer = row.customer_id
                 row.customer_id = customer_id
                 row.awaiting_clarification = False
                 await s.commit()
+                _log.info(
+                    "[conv] CUSTOMER-SWITCH session=%s old=%s new=%s (history wiped)",
+                    session_id, old_customer, customer_id,
+                )
                 return Session(
                     session_id=session_id,
                     customer_id=customer_id,
@@ -100,6 +112,10 @@ class ConversationManager:
             )
             result = await s.execute(stmt)
             history = [_unwrap_payload(m.payload) for m in result.scalars().all()]
+            _log.info(
+                "[conv] LOAD session=%s customer=%s history_len=%d awaiting_clarification=%s",
+                session_id, row.customer_id, len(history), row.awaiting_clarification,
+            )
             return Session(
                 session_id=session_id,
                 customer_id=row.customer_id,
@@ -153,9 +169,20 @@ class ConversationManager:
             row.awaiting_clarification = awaiting_clarification
             await s.commit()
 
+        roles = [str(m.get("role", "")) for m in new_messages]
+        _log.info(
+            "[conv] PERSIST session=%s wrote=%d ordinals=%s roles=%s awaiting_clarification=%s",
+            session.session_id, len(new_messages),
+            f"[{next_ordinal}..{next_ordinal + len(new_messages) - 1}]" if new_messages else "[]",
+            roles, awaiting_clarification,
+        )
+
     async def reset(self, session_id: str) -> None:
         async with self._sm() as s:
             row = await s.get(SessionRow, session_id)
             if row is not None:
                 await s.delete(row)
                 await s.commit()
+                _log.info("[conv] RESET session=%s (row + messages deleted)", session_id)
+            else:
+                _log.info("[conv] RESET session=%s (no row found, noop)", session_id)
