@@ -39,6 +39,7 @@ class Session:
     customer_id: str | None = None
     bot_id: str = "telecom_support"
     history: list[dict[str, Any]] = field(default_factory=list)
+    awaiting_clarification: bool = False
 
 
 def _wrap_payload(msg: dict[str, Any]) -> str:
@@ -121,6 +122,37 @@ class ConversationManager:
                 customer_id=row.customer_id,
                 bot_id=row.bot_id,
                 history=history,
+                awaiting_clarification=row.awaiting_clarification,
+            )
+
+    async def load_session(self, session_id: str) -> Session | None:
+        """Read-only: return the Session for `session_id`, or None if absent.
+
+        Unlike `get_or_create`, this never inserts a row — used by the UI's
+        page-load hydration so opening a tab doesn't conjure empty sessions.
+        """
+        async with self._sm() as s:
+            row = await s.get(SessionRow, session_id)
+            if row is None:
+                _log.debug("[conv] LOAD-RO session=%s → not found", session_id)
+                return None
+            stmt = (
+                select(MessageRow)
+                .where(MessageRow.session_id == session_id)
+                .order_by(MessageRow.ordinal)
+            )
+            result = await s.execute(stmt)
+            history = [_unwrap_payload(m.payload) for m in result.scalars().all()]
+            _log.info(
+                "[conv] LOAD-RO session=%s customer=%s history_len=%d awaiting=%s",
+                session_id, row.customer_id, len(history), row.awaiting_clarification,
+            )
+            return Session(
+                session_id=session_id,
+                customer_id=row.customer_id,
+                bot_id=row.bot_id,
+                history=history,
+                awaiting_clarification=row.awaiting_clarification,
             )
 
     async def persist_turn(

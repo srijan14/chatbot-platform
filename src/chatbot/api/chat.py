@@ -1,17 +1,58 @@
 """POST /chat handler — thin glue between HTTP and the orchestrator."""
+import json
+from typing import Any
+
 from fastapi import APIRouter, HTTPException, Request
 
 from src.chatbot.api.schemas import (
     ChatRequest,
     ChatResponse,
     ClarificationOut,
+    HistoryMessage,
+    HistoryResponse,
     ToolCallTraceOut,
 )
 from src.chatbot.core import guardrails
 from src.chatbot.observability.logger import get_logger, log_turn, truncate
+from src.chatbot.skills.clarification_skill import TOOL_NAME as CLARIFY_TOOL_NAME
 
 router = APIRouter()
 _log = get_logger("chat")
+
+
+def _to_visible_messages(history: list[dict[str, Any]]) -> list[HistoryMessage]:
+    """Filter a raw OpenAI-shape history down to user/assistant chat bubbles.
+
+    Rules:
+      - role="user" with non-empty content → keep as user bubble
+      - role="assistant" with non-empty content → keep as assistant bubble
+      - role="assistant" with content=None but tool_calls[ask_clarification]
+        → render the question as an assistant bubble (the platform's clarify
+        short-circuit stores the question only inside the tool_call args)
+      - role="tool" and tool-call-only assistant turns → skipped (internal)
+    """
+    out: list[HistoryMessage] = []
+    for m in history:
+        role = m.get("role")
+        content = m.get("content")
+        if role == "user" and content:
+            out.append(HistoryMessage(role="user", text=str(content)))
+        elif role == "assistant":
+            if content:
+                out.append(HistoryMessage(role="assistant", text=str(content)))
+                continue
+            for tc in m.get("tool_calls") or []:
+                if (tc.get("function") or {}).get("name") != CLARIFY_TOOL_NAME:
+                    continue
+                try:
+                    args = json.loads(tc["function"].get("arguments") or "{}")
+                except (json.JSONDecodeError, KeyError):
+                    args = {}
+                question = args.get("question")
+                if question:
+                    out.append(HistoryMessage(role="assistant", text=str(question)))
+                    break
+    return out
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -78,6 +119,33 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
         },
         awaiting_clarification=result.awaiting_clarification,
         clarification=clarification_out,
+    )
+
+
+@router.get("/chat/history", response_model=HistoryResponse)
+async def get_history(session_id: str, request: Request) -> HistoryResponse:
+    """Return user/assistant bubbles for a session, used by the UI on page load.
+
+    No-op (empty response) if the session_id is unknown — opening a fresh tab
+    doesn't accidentally create a session row.
+    """
+    state = request.app.state
+    session = await state.conversations.load_session(session_id)
+    if session is None:
+        _log.info("[chat] HISTORY session=%s → no row, returning empty", session_id)
+        return HistoryResponse(session_id=session_id)
+    visible = _to_visible_messages(session.history)
+    _log.info(
+        "[chat] HISTORY session=%s customer=%s visible=%d raw=%d awaiting=%s",
+        session_id, session.customer_id, len(visible), len(session.history),
+        session.awaiting_clarification,
+    )
+    return HistoryResponse(
+        session_id=session_id,
+        customer_id=session.customer_id,
+        bot_id=session.bot_id,
+        awaiting_clarification=session.awaiting_clarification,
+        messages=visible,
     )
 
 

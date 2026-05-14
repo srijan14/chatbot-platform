@@ -50,6 +50,8 @@ class BotConfig:
     # tool_call
     mcp_servers: list[MCPServerRef]
     tool_allowlist: list[str]
+    # clarification (optional; only used if 'clarification' is in enabled_skills)
+    clarification_expected_values: list[str] | None
     # guardrails
     max_input_chars: int
     pii_redaction_in_logs: bool
@@ -81,9 +83,11 @@ class BotConfig:
             is_reasoning = bool(explicit_reasoning)
 
         tool_call = data.get("tool_call") or {}
+        clarification = data.get("clarification") or {}
         guardrails = data.get("guardrails") or {}
         observability = data.get("observability") or {}
         servers = [MCPServerRef(**s) for s in tool_call.get("mcp_servers", [])]
+        expected_values = list(clarification.get("expected_values") or []) or None
         return cls(
             bot_id=data["bot_id"],
             name=data["name"],
@@ -98,6 +102,7 @@ class BotConfig:
             enabled_skills=list(data.get("skills", {}).get("enabled", [])),
             mcp_servers=servers,
             tool_allowlist=list(tool_call.get("tool_allowlist") or []),
+            clarification_expected_values=expected_values,
             max_input_chars=guardrails.get("max_input_chars", 2000),
             pii_redaction_in_logs=guardrails.get("pii_redaction_in_logs", True),
             log_level=observability.get("log_level", "info"),

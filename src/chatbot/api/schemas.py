@@ -35,3 +35,24 @@ class ChatResponse(BaseModel):
     tokens: dict
     awaiting_clarification: bool = False
     clarification: Optional[ClarificationOut] = None
+
+
+class HistoryMessage(BaseModel):
+    role: str  # "user" | "assistant"
+    text: str
+
+
+class HistoryResponse(BaseModel):
+    """Read model for GET /chat/history.
+
+    Strips the internal LLM plumbing (tool_call envelopes, role:"tool"
+    messages, intermediate assistant tool-only turns) and surfaces just the
+    visible chat bubbles. When the bot is awaiting a clarification, the
+    question is extracted from the corresponding tool_call args so it appears
+    as a normal assistant bubble on reload.
+    """
+    session_id: str
+    customer_id: Optional[str] = None
+    bot_id: Optional[str] = None
+    awaiting_clarification: bool = False
+    messages: list[HistoryMessage] = Field(default_factory=list)
