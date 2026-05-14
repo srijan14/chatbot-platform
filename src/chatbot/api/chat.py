@@ -11,6 +11,7 @@ from src.chatbot.api.schemas import (
     HistoryMessage,
     HistoryResponse,
     ToolCallTraceOut,
+    TurnSignalOut,
 )
 from src.chatbot.core import guardrails
 from src.chatbot.observability.logger import get_logger, log_turn, truncate
@@ -117,6 +118,9 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
             "completion": result.completion_tokens,
             "cached": result.cached_tokens,
         },
+        signals=[
+            TurnSignalOut(type=s.type, payload=s.payload) for s in result.signals
+        ],
         awaiting_clarification=result.awaiting_clarification,
         clarification=clarification_out,
     )

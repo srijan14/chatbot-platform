@@ -16,7 +16,7 @@ the skill gets it automatically; bot YAMLs only carry domain hints.
 """
 from __future__ import annotations
 
-from src.chatbot.skills.base import Skill
+from src.chatbot.skills.base import Skill, ToolResult, TurnSignal
 
 TOOL_NAME = "ask_clarification"
 
@@ -88,8 +88,26 @@ class ClarificationSkill(Skill):
     def system_prompt_addition(self) -> str | None:
         return _SYSTEM_PROMPT_RULE
 
-    async def execute_tool(self, name: str, arguments: dict) -> tuple[str, bool]:
-        # The orchestrator short-circuits ask_clarification before reaching here.
-        raise RuntimeError(
-            f"ClarificationSkill.execute_tool should not be reached (got {name})"
+    async def execute_tool(self, name: str, arguments: dict) -> ToolResult:
+        """Emit a terminal 'clarification' signal. The orchestrator dispatches
+        every tool uniformly; the skill alone decides the loop pauses here."""
+        question = arguments.get("question", "Could you clarify?")
+        expected = arguments.get("expected", "free_text")
+        suggested_replies = list(arguments.get("suggested_replies") or [])
+        return ToolResult(
+            # Goes into LLM history so the next-turn replay matches the
+            # tool_call_id pairing rule OpenAI enforces.
+            text="(awaiting user response)",
+            # Overrides the chat response's `text` field because the assistant
+            # message had content=None — the question lives only in args.
+            user_visible_text=question,
+            signal=TurnSignal(
+                type="clarification",
+                payload={
+                    "question": question,
+                    "expected": expected,
+                    "suggested_replies": suggested_replies,
+                },
+            ),
+            terminal=True,
         )
