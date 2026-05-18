@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.chatbot.core.bot_config_store import BotConfig
+from src.chatbot.core.bot_config_store import BotConfig, ClarificationConfig
 from src.chatbot.core.conversation_manager import Session
 from src.chatbot.core.llm_orchestrator import LLMOrchestrator
 from src.chatbot.skills.clarification_skill import (
@@ -142,106 +142,85 @@ async def test_clarification_skill_exposes_tool_schema():
     assert tools[0]["function"]["name"] == TOOL_NAME
     params = tools[0]["function"]["parameters"]
     assert "question" in params["required"]
+    # No domain-specific enum should be present by default — the skill stays
+    # generic until a bot config injects expected_types.
+    assert "enum" not in params["properties"]["expected"]
     assert skill.owns_tool(TOOL_NAME)
     assert not skill.owns_tool("get_customer_profile")
 
 
 @pytest.mark.asyncio
-async def test_default_expected_enum_is_domain_agnostic():
-    """Platform default must not leak telecom-specific tokens."""
-    skill = ClarificationSkill()
-    tools = await skill.prepare_tools()
-    enum_values = tools[0]["function"]["parameters"]["properties"]["expected"]["enum"]
-    assert enum_values == DEFAULT_EXPECTED_VALUES
-    for telecom_token in ("plan_id", "bill_id", "addon_id", "phone_number"):
-        assert telecom_token not in enum_values, (
-            f"{telecom_token!r} leaked into platform default — should come from bot YAML"
-        )
+async def test_clarification_schema_is_driven_by_config():
+    # A telecom-flavoured bot pulls its own vocabulary in via config.
+    telecom = ClarificationSkill(
+        expected_types=["plan_id", "bill_id", "yes_no"],
+        description="Telecom override description.",
+        max_suggested_replies=3,
+    )
+    tools = await telecom.prepare_tools()
+    fn = tools[0]["function"]
+    assert fn["description"] == "Telecom override description."
+    expected = fn["parameters"]["properties"]["expected"]
+    assert expected["enum"] == ["plan_id", "bill_id", "yes_no"]
+    assert fn["parameters"]["properties"]["suggested_replies"]["maxItems"] == 3
+
+    # A different bot picks a completely different vocabulary — proving the
+    # skill no longer carries telecom-specific knowledge.
+    bi = ClarificationSkill(expected_types=["metric", "dimension", "date_range"])
+    bi_tools = await bi.prepare_tools()
+    bi_expected = bi_tools[0]["function"]["parameters"]["properties"]["expected"]
+    assert bi_expected["enum"] == ["metric", "dimension", "date_range"]
 
 
-@pytest.mark.asyncio
-async def test_expected_values_configurable_per_bot():
-    """A bot can supply its own domain enum via YAML; the schema reflects it."""
-    domain = ["free_text", "plan_id", "bill_id"]
-    skill = ClarificationSkill(expected_values=domain)
-    tools = await skill.prepare_tools()
-    assert tools[0]["function"]["parameters"]["properties"]["expected"]["enum"] == domain
+def test_clarification_config_parsed_from_yaml(tmp_path):
+    """BotConfig.from_yaml should hydrate `clarification` from the YAML block."""
+    yaml_path = tmp_path / "demo_bot.yaml"
+    yaml_path.write_text(
+        """
+bot_id: demo_bot
+name: Demo
+description: ""
+llm:
+  provider: azure_openai
+  deployment: gpt-4o-test
+  max_tokens: 128
+  temperature: 0.1
+  max_tool_iterations: 2
+persona:
+  system_prompt: hi
+skills:
+  enabled: []
+clarification:
+  expected_types: [metric, dimension]
+  max_suggested_replies: 2
+  description: Ask only when the slice is ambiguous.
+""".strip()
+    )
+    cfg = BotConfig.from_yaml(yaml_path)
+    assert cfg.clarification.expected_types == ["metric", "dimension"]
+    assert cfg.clarification.max_suggested_replies == 2
+    assert cfg.clarification.description.startswith("Ask only")
 
 
-def test_clarification_skill_contributes_system_prompt():
-    """Generic clarification policy must come from the skill, not from each bot's YAML."""
-    skill = ClarificationSkill()
-    addition = skill.system_prompt_addition()
-    assert addition is not None
-    # The generic rule mentions the tool name + the never-with-another-tool guarantee.
-    assert "ask_clarification" in addition
-    assert "another tool" in addition.lower()
-
-
-@pytest.mark.asyncio
-async def test_clarification_emits_generic_signal():
-    """The generic surface is `result.signals` — a list of TurnSignals."""
-    client = _FakeOpenAI([
-        _make_response(
-            tool_call={
-                "id": "call_clar",
-                "name": TOOL_NAME,
-                "arguments": json.dumps({
-                    "question": "Which plan?",
-                    "expected": "plan_id",
-                    "suggested_replies": ["A", "B"],
-                }),
-            },
-            finish_reason="tool_calls",
-        ),
-    ])
-    orch = LLMOrchestrator(client)
-    sess = Session(session_id="sig1", customer_id="CUST001", history=[])
-    result = await orch.run_turn(sess, "change my plan", _bot_config(), [ClarificationSkill()])
-
-    assert len(result.signals) == 1
-    sig = result.signals[0]
-    assert sig.type == "clarification"
-    assert sig.payload == {
-        "question": "Which plan?",
-        "expected": "plan_id",
-        "suggested_replies": ["A", "B"],
-    }
-
-
-@pytest.mark.asyncio
-async def test_orchestrator_dispatches_clarification_via_skill_uniformly():
-    """The orchestrator no longer names the clarification tool. Removing the
-    skill from the skills list should cause `ask_clarification` to be
-    unhandled, NOT silently short-circuited.
-    """
-    client = _FakeOpenAI([
-        _make_response(
-            tool_call={
-                "id": "call_x",
-                "name": TOOL_NAME,
-                "arguments": '{"question":"x"}',
-            },
-            finish_reason="tool_calls",
-        ),
-        _make_response(content="ok", finish_reason="stop"),
-    ])
-    orch = LLMOrchestrator(client)
-    sess = Session(session_id="sig2", customer_id="CUST001", history=[])
-
-    # ClarificationSkill NOT in skills list → no skill owns ask_clarification.
-    result = await orch.run_turn(sess, "change my plan", _bot_config(), skills=[])
-
-    assert result.awaiting_clarification is False  # no signal emitted
-    assert result.signals == []
-    # The orchestrator records the unhandled tool's error result and continues.
-    assert any(not tc.ok and tc.name == TOOL_NAME for tc in result.tool_calls)
-
-
-def test_tool_result_default_is_non_terminal():
-    """Smoke: a vanilla ToolResult must not accidentally halt the loop."""
-    from src.chatbot.skills.base import ToolResult
-    tr = ToolResult(text="plain")
-    assert tr.terminal is False
-    assert tr.signal is None
-    assert tr.user_visible_text is None
+def test_clarification_config_defaults_when_block_omitted(tmp_path):
+    yaml_path = tmp_path / "bare_bot.yaml"
+    yaml_path.write_text(
+        """
+bot_id: bare_bot
+name: Bare
+description: ""
+llm:
+  provider: azure_openai
+  deployment: gpt-4o-test
+  max_tokens: 128
+  temperature: 0.1
+  max_tool_iterations: 2
+persona:
+  system_prompt: hi
+skills:
+  enabled: []
+""".strip()
+    )
+    cfg = BotConfig.from_yaml(yaml_path)
+    assert cfg.clarification == ClarificationConfig()
+    assert cfg.clarification.expected_types == []

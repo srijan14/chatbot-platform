@@ -31,10 +31,16 @@ class BotRouter:
         cfg = self.get_config(bot_id)
         skills: list[Skill] = []
 
-        if "clarification" in cfg.enabled_skills:
-            skills.append(
-                ClarificationSkill(expected_values=cfg.clarification_expected_values)
-            )
+        # Clarification is always available — it's how the bot signals it needs
+        # more info regardless of which domain skills are enabled. Schema (the
+        # expected-reply enum, description, suggested-reply cap) comes from the
+        # bot's `clarification:` YAML block so no domain leaks into the skill.
+        clar_cfg = cfg.clarification
+        skills.append(ClarificationSkill(
+            expected_types=clar_cfg.expected_types or None,
+            description=clar_cfg.description,
+            max_suggested_replies=clar_cfg.max_suggested_replies,
+        ))
 
         if "tool_call" in cfg.enabled_skills:
             if not cfg.mcp_servers:
