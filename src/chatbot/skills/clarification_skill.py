@@ -13,7 +13,10 @@ domain knowledge lives in this module.
 """
 from __future__ import annotations
 
+from src.chatbot.observability.logger import get_logger, truncate
 from src.chatbot.skills.base import Skill, ToolResult, TurnSignal
+
+_log = get_logger("clarification")
 
 TOOL_NAME = "ask_clarification"
 
@@ -70,6 +73,14 @@ class ClarificationSkill(Skill):
         if self.expected_types:
             expected_schema["enum"] = list(self.expected_types)
 
+        _log.info(
+            "[clar] SCHEMA-BUILT tool=%s expected_types=%s max_replies=%d description=%r",
+            TOOL_NAME,
+            self.expected_types or "<unconstrained>",
+            self.max_suggested_replies,
+            truncate(self.description, 120),
+        )
+
         return [{
             "type": "function",
             "function": {
@@ -107,9 +118,25 @@ class ClarificationSkill(Skill):
     async def execute_tool(self, name: str, arguments: dict) -> ToolResult:
         """Emit a terminal 'clarification' signal. The orchestrator dispatches
         every tool uniformly; the skill alone decides the loop pauses here."""
+        _log.info(
+            "[clar] CALL-RECEIVED tool=%s raw_args=%s",
+            name, truncate(arguments, 240),
+        )
         question = arguments.get("question", "Could you clarify?")
         expected = arguments.get("expected", "free_text")
         suggested_replies = list(arguments.get("suggested_replies") or [])
+        # Surface whether the model honoured the bot's expected_types enum.
+        # Useful when debugging "why is the UI's affordance wrong?" — the
+        # model is allowed to ignore the enum hint and pass anything.
+        in_enum = (
+            self.expected_types is None
+            or expected in self.expected_types
+        )
+        _log.info(
+            "[clar] SIGNAL-EMITTED type=clarification question=%r expected=%s "
+            "(in_enum=%s) suggested_replies=%s terminal=True",
+            truncate(question, 160), expected, in_enum, suggested_replies,
+        )
         return ToolResult(
             # Goes into LLM history so the next-turn replay matches the
             # tool_call_id pairing rule OpenAI enforces.

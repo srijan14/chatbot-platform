@@ -101,6 +101,32 @@ def _serialize_assistant(msg: Any) -> dict:
     return record
 
 
+def _detect_pending_clarification(history: list[dict]) -> dict | None:
+    """If the tail of history is a paused ask_clarification (assistant emitted
+    the tool call + the placeholder tool message was appended), return the
+    parsed args of that call. Otherwise None. Observability-only — the
+    orchestrator does not branch on this.
+    """
+    if len(history) < 2:
+        return None
+    last = history[-1]
+    prev = history[-2]
+    if last.get("role") != "tool":
+        return None
+    if not isinstance(last.get("content"), str) or "awaiting" not in last["content"].lower():
+        return None
+    if prev.get("role") != "assistant":
+        return None
+    for tc in prev.get("tool_calls") or []:
+        fn = tc.get("function") or {}
+        if fn.get("name") == "ask_clarification" and tc.get("id") == last.get("tool_call_id"):
+            try:
+                return json.loads(fn.get("arguments") or "{}")
+            except json.JSONDecodeError:
+                return {}
+    return None
+
+
 class LLMOrchestrator:
     def __init__(self, client: AsyncAzureOpenAI):
         self.client = client
@@ -120,6 +146,20 @@ class LLMOrchestrator:
             trace_id, session.session_id, session.customer_id,
             len(session.history), truncate(user_message, 120),
         )
+
+        # Best-effort detection that the previous turn ended in a paused
+        # clarification: the last assistant message emitted ask_clarification
+        # and the placeholder tool message followed. We don't gate any logic
+        # on this — purely for learning/observability. If it's true the new
+        # user_message is the *answer* to the previous question.
+        pending_clar = _detect_pending_clarification(session.history)
+        if pending_clar is not None:
+            _log.info(
+                "[orch] CLARIFICATION-CONTINUATION trace=%s answering_question=%r expected=%s",
+                trace_id,
+                truncate(pending_clar.get("question") or "", 120),
+                pending_clar.get("expected") or "<unknown>",
+            )
 
         # Build the system prompt in three layers:
         #   1. bot persona (from YAML)
@@ -302,6 +342,14 @@ class LLMOrchestrator:
                 if tool_result is not None:
                     if tool_result.signal is not None:
                         result.signals.append(tool_result.signal)
+                        _log.info(
+                            "[orch] SIGNAL-COLLECTED trace=%s type=%s payload=%s "
+                            "(total_signals=%d)",
+                            trace_id,
+                            tool_result.signal.type,
+                            truncate(tool_result.signal.payload, 240),
+                            len(result.signals),
+                        )
                     if tool_result.terminal:
                         terminal_seen = True
                         if tool_result.user_visible_text:
@@ -367,6 +415,11 @@ class LLMOrchestrator:
             "latency_ms": result.latency_ms,
             "response_chars": len(result.text),
             "awaiting_clarification": result.awaiting_clarification,
+            # Full signal payloads so a turn log row is self-contained for
+            # post-hoc clarification debugging.
+            "signals": [
+                {"type": s.type, "payload": s.payload} for s in result.signals
+            ],
         }
 
         return result
