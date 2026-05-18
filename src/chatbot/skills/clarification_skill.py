@@ -5,6 +5,11 @@ the user. The orchestrator intercepts the call locally (no MCP round-trip) and
 short-circuits the loop, surfacing a structured clarification signal on the
 chat response. Reusing the `tool_calls` channel means we avoid fragile string
 parsing and the parameters get validated provider-side.
+
+The schema (expected-reply enum, description hint, suggested-reply cap) is
+driven by per-bot config so a telecom bot can constrain `expected` to
+`plan_id|bill_id|...` while a BI or RAG bot picks its own vocabulary — no
+domain knowledge lives in this module.
 """
 from __future__ import annotations
 
@@ -12,53 +17,65 @@ from src.chatbot.skills.base import Skill
 
 TOOL_NAME = "ask_clarification"
 
-_TOOL_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": TOOL_NAME,
-        "description": (
-            "Use ONLY when you cannot proceed without a missing identifier or "
-            "choice from the user (e.g., which plan, which bill, which SIM). "
-            "Never call together with another tool in the same turn."
-        ),
-        "parameters": {
-            "type": "object",
-            "required": ["question"],
-            "properties": {
-                "question": {
-                    "type": "string",
-                    "description": "Short concrete question for the user.",
-                },
-                "expected": {
-                    "type": "string",
-                    "enum": [
-                        "plan_id",
-                        "phone_number",
-                        "customer_id",
-                        "bill_id",
-                        "addon_id",
-                        "yes_no",
-                        "free_text",
-                    ],
-                    "description": "Hint about the expected reply type.",
-                },
-                "suggested_replies": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "maxItems": 4,
-                    "description": "Up to 4 short suggested replies for quick-reply chips.",
-                },
-            },
-        },
-    },
-}
+DEFAULT_DESCRIPTION = (
+    "Use ONLY when you cannot proceed without missing information from the "
+    "user (a missing identifier, an ambiguous choice, a yes/no confirmation). "
+    "Never call together with another tool in the same turn."
+)
+
+DEFAULT_MAX_SUGGESTED_REPLIES = 4
 
 
 class ClarificationSkill(Skill):
     name = "clarification"
 
+    def __init__(
+        self,
+        expected_types: list[str] | None = None,
+        description: str | None = None,
+        max_suggested_replies: int = DEFAULT_MAX_SUGGESTED_REPLIES,
+    ):
+        self.expected_types = list(expected_types) if expected_types else None
+        self.description = description or DEFAULT_DESCRIPTION
+        self.max_suggested_replies = max_suggested_replies
+
     async def prepare_tools(self) -> list[dict]:
-        return [_TOOL_SCHEMA]
+        expected_schema: dict = {
+            "type": "string",
+            "description": "Hint about the expected reply type.",
+        }
+        # Only constrain to an enum when the bot config supplied one — otherwise
+        # leave `expected` as free-form so generic bots aren't boxed in.
+        if self.expected_types:
+            expected_schema["enum"] = list(self.expected_types)
+
+        return [{
+            "type": "function",
+            "function": {
+                "name": TOOL_NAME,
+                "description": self.description,
+                "parameters": {
+                    "type": "object",
+                    "required": ["question"],
+                    "properties": {
+                        "question": {
+                            "type": "string",
+                            "description": "Short concrete question for the user.",
+                        },
+                        "expected": expected_schema,
+                        "suggested_replies": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "maxItems": self.max_suggested_replies,
+                            "description": (
+                                f"Up to {self.max_suggested_replies} short "
+                                f"suggested replies for quick-reply chips."
+                            ),
+                        },
+                    },
+                },
+            },
+        }]
 
     def owns_tool(self, name: str) -> bool:
         return name == TOOL_NAME

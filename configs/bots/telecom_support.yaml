@@ -70,6 +70,21 @@ tool_call:
     - file_complaint
     - get_complaint_status
 
+clarification:
+  description: >
+    Use ONLY when you cannot proceed without a missing identifier or choice
+    from the user (e.g., which plan, which bill, which SIM). Never call together
+    with another tool in the same turn.
+  expected_types:
+    - plan_id
+    - phone_number
+    - customer_id
+    - bill_id
+    - addon_id
+    - yes_no
+    - free_text
+  max_suggested_replies: 4
+
 guardrails:
   max_input_chars: 2000
   pii_redaction_in_logs: true
