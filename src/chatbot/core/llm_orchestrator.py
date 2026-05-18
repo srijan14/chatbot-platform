@@ -5,11 +5,16 @@ For each turn we:
      conversation history, then the new user message.
   2. Call Azure OpenAI Chat Completions with the message list and the union
      of tool schemas contributed by each enabled skill.
-  3. If `finish_reason == "tool_calls"`, execute every requested tool through
-     the skill that owns it. The synthetic `ask_clarification` tool is
-     short-circuited locally: the loop returns immediately with
-     `awaiting_clarification=True`.
+  3. If `finish_reason == "tool_calls"`, dispatch every requested tool through
+     the skill that owns it. Each returns a `ToolResult` which may carry a
+     `TurnSignal` (clarification, handoff, …) and/or a `terminal` flag. The
+     orchestrator collects signals and stops the iteration loop when any
+     terminal result fires.
   4. Otherwise, return the assistant's text.
+
+The orchestrator is agnostic about *which* tools are terminal — that's the
+skill's call. No tool name is special-cased here. New skill types (handoff,
+confirmation, end-of-conversation) plug in by returning the right ToolResult.
 
 Prompt caching on Azure OpenAI is automatic for gpt-4o once a prompt crosses
 ~1024 tokens. We don't have to mark anything; we just keep the system prompt
@@ -20,17 +25,15 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 from openai import AsyncAzureOpenAI
 
 from src.chatbot.core.bot_config_store import BotConfig
 from src.chatbot.core.conversation_manager import Session
-from datetime import datetime, timezone
-
 from src.chatbot.observability.logger import get_logger, new_trace_id, truncate
-from src.chatbot.skills.base import Skill
-from src.chatbot.skills.clarification_skill import TOOL_NAME as CLARIFY_TOOL_NAME
+from src.chatbot.skills.base import Skill, TurnSignal
 
 _log = get_logger("orch")
 
@@ -62,6 +65,10 @@ class TurnResult:
     cached_tokens: int = 0
     latency_ms: int = 0
     capped: bool = False
+    # Generic surface: every TurnSignal a skill emitted during this turn.
+    signals: list[TurnSignal] = field(default_factory=list)
+    # Backward-compat convenience accessors, derived from `signals` after the
+    # loop. New code should prefer iterating `signals` directly.
     awaiting_clarification: bool = False
     clarification: ClarificationData | None = None
     # Messages appended to session.history during this turn — the chat handler
@@ -214,45 +221,16 @@ class LLMOrchestrator:
                 )
                 break
 
-            # Detect ask_clarification before dispatching anything else. If
-            # present, we short-circuit: emit the synthetic tool result so the
-            # OpenAI envelope stays well-formed, set the clarification fields,
-            # and exit the loop.
-            clarify_call = next(
-                (tc for tc in msg.tool_calls if tc.function.name == CLARIFY_TOOL_NAME),
-                None,
-            )
-            if clarify_call is not None:
-                try:
-                    args = json.loads(clarify_call.function.arguments or "{}")
-                except json.JSONDecodeError:
-                    args = {}
-                question = args.get("question", "Could you clarify?")
-                expected = args.get("expected", "free_text")
-                suggested = list(args.get("suggested_replies") or [])
-
-                result.text = question
-                result.awaiting_clarification = True
-                result.clarification = ClarificationData(
-                    question=question,
-                    expected=expected,
-                    suggested_replies=suggested,
-                )
-
-                _log.info(
-                    "[orch] CLARIFY-INTERCEPT trace=%s id=%s question=%r expected=%s suggested=%s",
-                    trace_id, clarify_call.id, truncate(question, 120), expected, suggested,
-                )
-
-                # OpenAI requires every tool_call_id to have a matching tool message.
-                # If the model emitted multiple tool calls (it shouldn't per the
-                # system prompt, but just in case), close them all out.
-                for tc in msg.tool_calls:
-                    placeholder = (
-                        "(awaiting user response)"
-                        if tc.id == clarify_call.id
-                        else "(skipped: clarification pending)"
-                    )
+            # Dispatch every tool uniformly. A skill may return a terminal
+            # ToolResult (e.g. clarification), in which case we still emit
+            # placeholder role:"tool" messages for any remaining tool_calls —
+            # OpenAI requires every tool_call_id to be answered — and then
+            # exit the iteration loop.
+            terminal_seen = False
+            terminal_visible_text: str | None = None
+            for tc in msg.tool_calls:
+                if terminal_seen:
+                    placeholder = "(skipped: terminal signal pending)"
                     session.history.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
@@ -262,11 +240,8 @@ class LLMOrchestrator:
                         "[orch] tool_placeholder trace=%s tool_call_id=%s content=%r",
                         trace_id, tc.id, placeholder,
                     )
-                break
+                    continue
 
-            # Execute every tool the model requested in this round; each gets its
-            # own `role:"tool"` message echoing the matching tool_call_id.
-            for tc in msg.tool_calls:
                 t_start = time.perf_counter()
                 try:
                     args = json.loads(tc.function.arguments) if tc.function.arguments else {}
@@ -284,22 +259,33 @@ class LLMOrchestrator:
                         f"Tool '{tc.function.name}' is not available on this bot.",
                         True,
                     )
+                    tool_result = None
                     _log.warning(
                         "[orch] tool_unhandled trace=%s name=%s — no skill owns it",
                         trace_id, tc.function.name,
                     )
                 else:
                     try:
-                        text, is_err = await handler.execute_tool(tc.function.name, args)
+                        tool_result = await handler.execute_tool(tc.function.name, args)
+                        text, is_err = tool_result.text, tool_result.is_error
                     except Exception as e:
-                        text, is_err = f"Tool execution error: {e}", True
+                        text, is_err, tool_result = (
+                            f"Tool execution error: {e}",
+                            True,
+                            None,
+                        )
 
                 duration_ms = int((time.perf_counter() - t_start) * 1000)
                 _log.info(
-                    "[orch] TOOL-RESULT  trace=%s iter=%d name=%s duration=%dms ok=%s output=%r",
+                    "[orch] TOOL-RESULT  trace=%s iter=%d name=%s duration=%dms ok=%s "
+                    "signal=%s terminal=%s output=%r",
                     trace_id, iteration + 1, tc.function.name, duration_ms,
-                    not is_err, truncate(text, 200),
+                    not is_err,
+                    tool_result.signal.type if (tool_result and tool_result.signal) else None,
+                    bool(tool_result and tool_result.terminal),
+                    truncate(text, 200),
                 )
+
                 result.tool_calls.append(ToolCallTrace(
                     name=tc.function.name,
                     input=args,
@@ -312,6 +298,20 @@ class LLMOrchestrator:
                     "tool_call_id": tc.id,
                     "content": text or "(empty)",
                 })
+
+                if tool_result is not None:
+                    if tool_result.signal is not None:
+                        result.signals.append(tool_result.signal)
+                    if tool_result.terminal:
+                        terminal_seen = True
+                        if tool_result.user_visible_text:
+                            terminal_visible_text = tool_result.user_visible_text
+
+            if terminal_seen:
+                if terminal_visible_text:
+                    result.text = terminal_visible_text
+                break
+            # No terminal signal — fall through to the next LLM iteration.
         else:
             result.capped = True
             last = session.history[-1] if session.history else None
@@ -326,6 +326,19 @@ class LLMOrchestrator:
 
         result.latency_ms = int((time.perf_counter() - t0) * 1000)
         result.new_messages = session.history[pre_persist_index:]
+
+        # Derive backward-compat clarification fields from the generic signals
+        # list. Callers that don't care about clarification specifically can
+        # just iterate `result.signals`.
+        for sig in result.signals:
+            if sig.type == "clarification":
+                result.awaiting_clarification = True
+                result.clarification = ClarificationData(
+                    question=sig.payload.get("question", ""),
+                    expected=sig.payload.get("expected", "free_text"),
+                    suggested_replies=list(sig.payload.get("suggested_replies") or []),
+                )
+                break
 
         _log.info(
             "[orch] TURN-END   trace=%s iter=%d latency=%dms awaiting_clarification=%s "

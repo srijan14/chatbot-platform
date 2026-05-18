@@ -176,3 +176,72 @@ def test_clarification_skill_contributes_system_prompt():
     # The generic rule mentions the tool name + the never-with-another-tool guarantee.
     assert "ask_clarification" in addition
     assert "another tool" in addition.lower()
+
+
+@pytest.mark.asyncio
+async def test_clarification_emits_generic_signal():
+    """The generic surface is `result.signals` — a list of TurnSignals."""
+    client = _FakeOpenAI([
+        _make_response(
+            tool_call={
+                "id": "call_clar",
+                "name": TOOL_NAME,
+                "arguments": json.dumps({
+                    "question": "Which plan?",
+                    "expected": "plan_id",
+                    "suggested_replies": ["A", "B"],
+                }),
+            },
+            finish_reason="tool_calls",
+        ),
+    ])
+    orch = LLMOrchestrator(client)
+    sess = Session(session_id="sig1", customer_id="CUST001", history=[])
+    result = await orch.run_turn(sess, "change my plan", _bot_config(), [ClarificationSkill()])
+
+    assert len(result.signals) == 1
+    sig = result.signals[0]
+    assert sig.type == "clarification"
+    assert sig.payload == {
+        "question": "Which plan?",
+        "expected": "plan_id",
+        "suggested_replies": ["A", "B"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_dispatches_clarification_via_skill_uniformly():
+    """The orchestrator no longer names the clarification tool. Removing the
+    skill from the skills list should cause `ask_clarification` to be
+    unhandled, NOT silently short-circuited.
+    """
+    client = _FakeOpenAI([
+        _make_response(
+            tool_call={
+                "id": "call_x",
+                "name": TOOL_NAME,
+                "arguments": '{"question":"x"}',
+            },
+            finish_reason="tool_calls",
+        ),
+        _make_response(content="ok", finish_reason="stop"),
+    ])
+    orch = LLMOrchestrator(client)
+    sess = Session(session_id="sig2", customer_id="CUST001", history=[])
+
+    # ClarificationSkill NOT in skills list → no skill owns ask_clarification.
+    result = await orch.run_turn(sess, "change my plan", _bot_config(), skills=[])
+
+    assert result.awaiting_clarification is False  # no signal emitted
+    assert result.signals == []
+    # The orchestrator records the unhandled tool's error result and continues.
+    assert any(not tc.ok and tc.name == TOOL_NAME for tc in result.tool_calls)
+
+
+def test_tool_result_default_is_non_terminal():
+    """Smoke: a vanilla ToolResult must not accidentally halt the loop."""
+    from src.chatbot.skills.base import ToolResult
+    tr = ToolResult(text="plain")
+    assert tr.terminal is False
+    assert tr.signal is None
+    assert tr.user_visible_text is None
