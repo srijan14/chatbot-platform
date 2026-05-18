@@ -1,18 +1,15 @@
 """Clarification Skill — domain-agnostic 'ask the user for missing info'.
 
-Exposes a synthetic `ask_clarification` tool that the LLM calls when it
-cannot proceed. The orchestrator intercepts that call locally (no MCP round
-trip) and surfaces a structured signal on the chat response.
+The LLM emits this tool call when it cannot proceed without missing info from
+the user. The orchestrator intercepts the call locally (no MCP round-trip) and
+short-circuits the loop, surfacing a structured clarification signal on the
+chat response. Reusing the `tool_calls` channel means we avoid fragile string
+parsing and the parameters get validated provider-side.
 
-Generic by design: the `expected` enum defaults to a small UI taxonomy
-(free_text, yes_no, single_choice, multi_choice, numeric). Bots can supply
-domain-specific tokens via `clarification.expected_values` in their YAML —
-e.g. a telecom bot might add `plan_id`, `bill_id`, `addon_id`. Platform
-core never names telecom things.
-
-The platform-level instruction "call ask_clarification when ambiguous"
-is contributed by `system_prompt_addition()` so every bot that enables
-the skill gets it automatically; bot YAMLs only carry domain hints.
+The schema (expected-reply enum, description hint, suggested-reply cap) is
+driven by per-bot config so a telecom bot can constrain `expected` to
+`plan_id|bill_id|...` while a BI or RAG bot picks its own vocabulary — no
+domain knowledge lives in this module.
 """
 from __future__ import annotations
 
@@ -20,41 +17,43 @@ from src.chatbot.skills.base import Skill, ToolResult, TurnSignal
 
 TOOL_NAME = "ask_clarification"
 
-# Generic UI taxonomy. Bots can extend / replace via config.
-DEFAULT_EXPECTED_VALUES: list[str] = [
-    "free_text",
-    "yes_no",
-    "single_choice",
-    "multi_choice",
-    "numeric",
-]
-
-_SYSTEM_PROMPT_RULE = (
-    "Clarification policy: if the user's request is ambiguous or missing "
-    "required information, call the `ask_clarification` tool with a short, "
-    "concrete question. When useful, include up to 4 `suggested_replies` "
-    "(short concrete options the user can pick). Never call "
-    "`ask_clarification` together with another tool in the same turn."
+DEFAULT_DESCRIPTION = (
+    "Use ONLY when you cannot proceed without missing information from the "
+    "user (a missing identifier, an ambiguous choice, a yes/no confirmation). "
+    "Never call together with another tool in the same turn."
 )
+
+DEFAULT_MAX_SUGGESTED_REPLIES = 4
 
 
 class ClarificationSkill(Skill):
     name = "clarification"
 
-    def __init__(self, expected_values: list[str] | None = None):
-        # `None` or empty → use the generic platform default.
-        self.expected_values = list(expected_values) if expected_values else list(DEFAULT_EXPECTED_VALUES)
+    def __init__(
+        self,
+        expected_types: list[str] | None = None,
+        description: str | None = None,
+        max_suggested_replies: int = DEFAULT_MAX_SUGGESTED_REPLIES,
+    ):
+        self.expected_types = list(expected_types) if expected_types else None
+        self.description = description or DEFAULT_DESCRIPTION
+        self.max_suggested_replies = max_suggested_replies
 
-    def _tool_schema(self) -> dict:
-        return {
+    async def prepare_tools(self) -> list[dict]:
+        expected_schema: dict = {
+            "type": "string",
+            "description": "Hint about the expected reply type.",
+        }
+        # Only constrain to an enum when the bot config supplied one — otherwise
+        # leave `expected` as free-form so generic bots aren't boxed in.
+        if self.expected_types:
+            expected_schema["enum"] = list(self.expected_types)
+
+        return [{
             "type": "function",
             "function": {
                 "name": TOOL_NAME,
-                "description": (
-                    "Use ONLY when you cannot proceed without missing info "
-                    "from the user. Provide a short question and optional "
-                    "suggested replies."
-                ),
+                "description": self.description,
                 "parameters": {
                     "type": "object",
                     "required": ["question"],
@@ -63,24 +62,20 @@ class ClarificationSkill(Skill):
                             "type": "string",
                             "description": "Short concrete question for the user.",
                         },
-                        "expected": {
-                            "type": "string",
-                            "enum": self.expected_values,
-                            "description": "Hint about the kind of reply expected.",
-                        },
+                        "expected": expected_schema,
                         "suggested_replies": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "maxItems": 4,
-                            "description": "Up to 4 short suggested replies for quick-reply chips.",
+                            "maxItems": self.max_suggested_replies,
+                            "description": (
+                                f"Up to {self.max_suggested_replies} short "
+                                f"suggested replies for quick-reply chips."
+                            ),
                         },
                     },
                 },
             },
-        }
-
-    async def prepare_tools(self) -> list[dict]:
-        return [self._tool_schema()]
+        }]
 
     def owns_tool(self, name: str) -> bool:
         return name == TOOL_NAME
