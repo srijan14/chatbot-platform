@@ -50,23 +50,6 @@ skills:
   enabled: [tool_call, clarification]
   disabled: [rag, tag, web_scrape]
 
-clarification:
-  # Telecom-specific tokens that supplement the platform default enum
-  # (free_text / yes_no / single_choice / multi_choice / numeric). The model
-  # picks one as a hint about what kind of reply is expected — useful for
-  # the UI to choose the right input affordance.
-  expected_values:
-    - free_text
-    - yes_no
-    - single_choice
-    - numeric
-    - plan_id
-    - bill_id
-    - addon_id
-    - ticket_id
-    - phone_number
-    - customer_id
-
 tool_call:
   mcp_servers:
     - name: telecom
@@ -93,14 +76,21 @@ clarification:
     Use ONLY when you cannot proceed without a missing identifier or choice
     from the user (e.g., which plan, which bill, which SIM). Never call together
     with another tool in the same turn.
+  # Telecom-specific tokens layered on top of the platform defaults
+  # (free_text / yes_no / single_choice / multi_choice / numeric). The model
+  # picks one as a hint about what kind of reply is expected — useful for
+  # the UI to choose the right input affordance.
   expected_types:
+    - free_text
+    - yes_no
+    - single_choice
+    - numeric
     - plan_id
     - phone_number
     - customer_id
     - bill_id
     - addon_id
-    - yes_no
-    - free_text
+    - ticket_id
   max_suggested_replies: 4
 
 guardrails:

@@ -31,7 +31,6 @@ def _bot_config() -> BotConfig:
         enabled_skills=["tool_call", "clarification"],
         mcp_servers=[],
         tool_allowlist=[],
-        clarification_expected_values=None,
         max_input_chars=2000,
         pii_redaction_in_logs=True,
     )

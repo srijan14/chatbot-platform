@@ -23,7 +23,28 @@ DEFAULT_DESCRIPTION = (
     "Never call together with another tool in the same turn."
 )
 
+# Platform-generic reply-type vocabulary. Bots layer domain tokens on top via
+# their `clarification.expected_types` (or legacy `expected_values`) YAML key.
+DEFAULT_EXPECTED_VALUES = [
+    "free_text",
+    "yes_no",
+    "single_choice",
+    "multi_choice",
+    "numeric",
+]
+
 DEFAULT_MAX_SUGGESTED_REPLIES = 4
+
+# Concatenated into the system prompt by the orchestrator so every bot that
+# enables this skill learns the same calling convention without each YAML
+# repeating it.
+_SYSTEM_PROMPT_RULE = (
+    "When the user's request is ambiguous or is missing a critical identifier, "
+    "do NOT guess. Call the `ask_clarification` tool with a short concrete "
+    "question, an `expected` reply-type hint, and when appropriate up to "
+    "a few `suggested_replies` the user can pick from. Never call "
+    "`ask_clarification` together with another tool in the same turn."
+)
 
 
 class ClarificationSkill(Skill):
