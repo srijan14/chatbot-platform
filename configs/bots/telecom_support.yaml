@@ -39,15 +39,33 @@ persona:
     - Keep responses concise. Use short bullet lists when comparing plans or bills.
     - Use Indian Rupee (₹) for monetary amounts. Times in IST when speaking, but tools
       work in UTC ISO timestamps.
-    - When the user's request is ambiguous or is missing a critical identifier
-      (which plan, which bill, which SIM, which addon), do NOT guess. Call the
-      `ask_clarification` tool with a short concrete question, and when appropriate
-      provide up to 4 `suggested_replies` the user can pick from. Never call
-      `ask_clarification` together with another tool in the same turn.
+    - When asking a clarifying question in this domain, prefer concrete
+      identifier picks (e.g. a specific bill_id, plan_id, or addon_id) over
+      open-ended questions.
 
+# The generic "call ask_clarification when ambiguous" rule is contributed by
+# the clarification skill itself (ClarificationSkill.system_prompt_addition).
+# We only encode domain-specific hints in the persona above.
 skills:
-  enabled: [tool_call]
+  enabled: [tool_call, clarification]
   disabled: [rag, tag, web_scrape]
+
+clarification:
+  # Telecom-specific tokens that supplement the platform default enum
+  # (free_text / yes_no / single_choice / multi_choice / numeric). The model
+  # picks one as a hint about what kind of reply is expected — useful for
+  # the UI to choose the right input affordance.
+  expected_values:
+    - free_text
+    - yes_no
+    - single_choice
+    - numeric
+    - plan_id
+    - bill_id
+    - addon_id
+    - ticket_id
+    - phone_number
+    - customer_id
 
 tool_call:
   mcp_servers:

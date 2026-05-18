@@ -9,7 +9,11 @@ import pytest
 from src.chatbot.core.bot_config_store import BotConfig, ClarificationConfig
 from src.chatbot.core.conversation_manager import Session
 from src.chatbot.core.llm_orchestrator import LLMOrchestrator
-from src.chatbot.skills.clarification_skill import TOOL_NAME, ClarificationSkill
+from src.chatbot.skills.clarification_skill import (
+    DEFAULT_EXPECTED_VALUES,
+    TOOL_NAME,
+    ClarificationSkill,
+)
 
 
 def _bot_config() -> BotConfig:
@@ -24,9 +28,10 @@ def _bot_config() -> BotConfig:
         temperature=0.2,
         max_tool_iterations=3,
         system_prompt="you are a test bot",
-        enabled_skills=["tool_call"],
+        enabled_skills=["tool_call", "clarification"],
         mcp_servers=[],
         tool_allowlist=[],
+        clarification_expected_values=None,
         max_input_chars=2000,
         pii_redaction_in_logs=True,
     )

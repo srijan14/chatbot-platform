@@ -1,7 +1,11 @@
 """Bot Router — picks a bot config and assembles its enabled skills.
 
-Returns an ordered list of `Skill` instances. The orchestrator iterates skills
-to gather tool definitions and to dispatch tool calls by ownership.
+Returns an ordered list of `Skill` instances. The orchestrator iterates
+skills to gather tool definitions and to dispatch tool calls by ownership.
+
+Skills are opt-in via `skills.enabled` in the bot YAML — the platform makes
+no assumption about which skills any given bot wants. This keeps clarification,
+tool_call, RAG, TAG, etc. on the same footing.
 """
 from src.chatbot.core.bot_config_store import BotConfig, load_bot_config
 from src.chatbot.engines.tool_engine.mcp_client import MCPClient
