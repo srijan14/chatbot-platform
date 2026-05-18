@@ -24,7 +24,10 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
+from src.chatbot.observability.logger import get_logger
 from src.chatbot.persistence.models import MessageRow, SessionRow
+
+_log = get_logger("conv")
 
 # Payload schema version stored inside MessageRow.payload as `_v`.
 PAYLOAD_VERSION = 1
@@ -36,6 +39,7 @@ class Session:
     customer_id: str | None = None
     bot_id: str = "telecom_support"
     history: list[dict[str, Any]] = field(default_factory=list)
+    awaiting_clarification: bool = False
 
 
 def _wrap_payload(msg: dict[str, Any]) -> str:
@@ -71,6 +75,10 @@ class ConversationManager:
                 )
                 s.add(row)
                 await s.commit()
+                _log.info(
+                    "[conv] NEW session=%s customer=%s bot=%s",
+                    session_id, customer_id, bot_id,
+                )
                 return Session(
                     session_id=session_id,
                     customer_id=customer_id,
@@ -83,9 +91,14 @@ class ConversationManager:
                 await s.execute(
                     delete(MessageRow).where(MessageRow.session_id == session_id)
                 )
+                old_customer = row.customer_id
                 row.customer_id = customer_id
                 row.awaiting_clarification = False
                 await s.commit()
+                _log.info(
+                    "[conv] CUSTOMER-SWITCH session=%s old=%s new=%s (history wiped)",
+                    session_id, old_customer, customer_id,
+                )
                 return Session(
                     session_id=session_id,
                     customer_id=customer_id,
@@ -100,11 +113,46 @@ class ConversationManager:
             )
             result = await s.execute(stmt)
             history = [_unwrap_payload(m.payload) for m in result.scalars().all()]
+            _log.info(
+                "[conv] LOAD session=%s customer=%s history_len=%d awaiting_clarification=%s",
+                session_id, row.customer_id, len(history), row.awaiting_clarification,
+            )
             return Session(
                 session_id=session_id,
                 customer_id=row.customer_id,
                 bot_id=row.bot_id,
                 history=history,
+                awaiting_clarification=row.awaiting_clarification,
+            )
+
+    async def load_session(self, session_id: str) -> Session | None:
+        """Read-only: return the Session for `session_id`, or None if absent.
+
+        Unlike `get_or_create`, this never inserts a row — used by the UI's
+        page-load hydration so opening a tab doesn't conjure empty sessions.
+        """
+        async with self._sm() as s:
+            row = await s.get(SessionRow, session_id)
+            if row is None:
+                _log.debug("[conv] LOAD-RO session=%s → not found", session_id)
+                return None
+            stmt = (
+                select(MessageRow)
+                .where(MessageRow.session_id == session_id)
+                .order_by(MessageRow.ordinal)
+            )
+            result = await s.execute(stmt)
+            history = [_unwrap_payload(m.payload) for m in result.scalars().all()]
+            _log.info(
+                "[conv] LOAD-RO session=%s customer=%s history_len=%d awaiting=%s",
+                session_id, row.customer_id, len(history), row.awaiting_clarification,
+            )
+            return Session(
+                session_id=session_id,
+                customer_id=row.customer_id,
+                bot_id=row.bot_id,
+                history=history,
+                awaiting_clarification=row.awaiting_clarification,
             )
 
     async def persist_turn(
@@ -153,9 +201,20 @@ class ConversationManager:
             row.awaiting_clarification = awaiting_clarification
             await s.commit()
 
+        roles = [str(m.get("role", "")) for m in new_messages]
+        _log.info(
+            "[conv] PERSIST session=%s wrote=%d ordinals=%s roles=%s awaiting_clarification=%s",
+            session.session_id, len(new_messages),
+            f"[{next_ordinal}..{next_ordinal + len(new_messages) - 1}]" if new_messages else "[]",
+            roles, awaiting_clarification,
+        )
+
     async def reset(self, session_id: str) -> None:
         async with self._sm() as s:
             row = await s.get(SessionRow, session_id)
             if row is not None:
                 await s.delete(row)
                 await s.commit()
+                _log.info("[conv] RESET session=%s (row + messages deleted)", session_id)
+            else:
+                _log.info("[conv] RESET session=%s (no row found, noop)", session_id)

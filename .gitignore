@@ -17,4 +17,7 @@ logs/
 .DS_Store
 *.swp
 node_modules/
+data/**
+notebooks/**
+services/**
 data/

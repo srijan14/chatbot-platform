@@ -1,7 +1,11 @@
 """Bot Router — picks a bot config and assembles its enabled skills.
 
-Returns an ordered list of `Skill` instances. The orchestrator iterates skills
-to gather tool definitions and to dispatch tool calls by ownership.
+Returns an ordered list of `Skill` instances. The orchestrator iterates
+skills to gather tool definitions and to dispatch tool calls by ownership.
+
+Skills are opt-in via `skills.enabled` in the bot YAML — the platform makes
+no assumption about which skills any given bot wants. This keeps clarification,
+tool_call, RAG, TAG, etc. on the same footing.
 """
 from src.chatbot.core.bot_config_store import BotConfig, load_bot_config
 from src.chatbot.engines.tool_engine.mcp_client import MCPClient
@@ -28,8 +32,15 @@ class BotRouter:
         skills: list[Skill] = []
 
         # Clarification is always available — it's how the bot signals it needs
-        # more info regardless of which domain skills are enabled.
-        skills.append(ClarificationSkill())
+        # more info regardless of which domain skills are enabled. Schema (the
+        # expected-reply enum, description, suggested-reply cap) comes from the
+        # bot's `clarification:` YAML block so no domain leaks into the skill.
+        clar_cfg = cfg.clarification
+        skills.append(ClarificationSkill(
+            expected_types=clar_cfg.expected_types or None,
+            description=clar_cfg.description,
+            max_suggested_replies=clar_cfg.max_suggested_replies,
+        ))
 
         if "tool_call" in cfg.enabled_skills:
             if not cfg.mcp_servers:

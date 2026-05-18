@@ -21,6 +21,35 @@ function ensureSessionId() {
 }
 let SESSION_ID = ensureSessionId();
 
+// Hydrate the chat with prior turns when the page (re)loads. The server returns
+// only user/assistant text bubbles — tool plumbing stays hidden. If the session
+// has a customer_id on the server, sync the dropdown to it so the next message
+// doesn't trigger a customer-switch wipe.
+async function loadHistory() {
+  try {
+    const r = await fetch(`/chat/history?session_id=${encodeURIComponent(SESSION_ID)}`);
+    if (!r.ok) return;
+    const data = await r.json();
+    if (!data.messages || !data.messages.length) return;
+    if (data.customer_id) {
+      const opt = els.customer.querySelector(`option[value="${data.customer_id}"]`);
+      if (opt) els.customer.value = data.customer_id;
+    }
+    for (const m of data.messages) {
+      addMessage(m.role, m.text);
+    }
+    const tail = data.messages.length;
+    setStatus(
+      data.awaiting_clarification
+        ? `Restored ${tail} message${tail === 1 ? "" : "s"}. Awaiting your clarification.`
+        : `Restored ${tail} message${tail === 1 ? "" : "s"} from prior session.`
+    );
+  } catch (e) {
+    // Don't block the chat if history fetch fails — just start fresh.
+    console.warn("history load failed:", e);
+  }
+}
+
 function addMessage(role, text, trace, meta, opts = {}) {
   const wrapper = document.createElement("div");
   wrapper.className = `msg ${role}` + (opts.clarify ? " clarify" : "");
@@ -170,3 +199,4 @@ els.customer.addEventListener("change", () => {
 });
 
 els.input.focus();
+loadHistory();

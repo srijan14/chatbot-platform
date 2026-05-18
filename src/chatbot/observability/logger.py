@@ -2,6 +2,10 @@
 
 Default sink: a `turn_logs` row in the chatbot DB. Optionally mirrors to
 `LOG_DIR/turns.jsonl` for grep-friendly tailing when `LOG_JSONL=1`.
+
+Also exposes `get_logger("<stage>")` for pipeline-stage logs (chat / conv /
+orch / mcp). Stage loggers inherit the single stdout handler configured here.
+Set `LOG_LEVEL=DEBUG` in .env to see every step.
 """
 from __future__ import annotations
 
@@ -24,21 +28,42 @@ LOG_DIR = Path(os.getenv("LOG_DIR", "logs"))
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 TURNS_FILE = LOG_DIR / "turns.jsonl"
 
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
 
 class _StdoutFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
+        ts = self.formatTime(record, "%H:%M:%S")
         payload = getattr(record, "payload", None)
         if isinstance(payload, dict):
-            return f"[{record.levelname}] {json.dumps(payload, default=str)}"
-        return super().format(record)
+            return f"{ts} [{record.levelname:5}] {record.name}: {json.dumps(payload, default=str)}"
+        return f"{ts} [{record.levelname:5}] {record.name}: {record.getMessage()}"
 
 
 _logger = logging.getLogger("chatbot")
 if not _logger.handlers:
     h = logging.StreamHandler(sys.stdout)
-    h.setFormatter(_StdoutFormatter("%(message)s"))
+    h.setFormatter(_StdoutFormatter())
     _logger.addHandler(h)
-    _logger.setLevel(logging.INFO)
+    _logger.setLevel(LOG_LEVEL)
+    # Don't propagate up to the root logger (avoids double prints under uvicorn).
+    _logger.propagate = False
+
+
+def get_logger(stage: str) -> logging.Logger:
+    """Return a child logger 'chatbot.<stage>'. Logs flow through the single
+    stdout handler configured on 'chatbot'. Use the LOG_LEVEL env var to tune
+    verbosity globally."""
+    return logging.getLogger(f"chatbot.{stage}")
+
+
+def truncate(value: Any, n: int = 200) -> str:
+    """Stringify and cap to n chars, with a count of the truncated tail.
+    Useful for keeping log lines readable when the payload is a fat dict."""
+    s = value if isinstance(value, str) else json.dumps(value, default=str)
+    if len(s) <= n:
+        return s
+    return f"{s[:n]}…<+{len(s) - n} chars>"
 
 
 def new_trace_id() -> str:

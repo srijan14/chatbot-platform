@@ -6,9 +6,9 @@ doesn't care.
 """
 from __future__ import annotations
 
-from src.chatbot.skills.base import Skill
 from src.chatbot.engines.tool_engine.mcp_client import MCPClient
 from src.chatbot.engines.tool_engine.tool_translator import mcp_to_openai
+from src.chatbot.skills.base import Skill, ToolResult
 
 
 class ToolCallSkill(Skill):
@@ -28,5 +28,6 @@ class ToolCallSkill(Skill):
     def owns_tool(self, name: str) -> bool:
         return name in self._tool_names
 
-    async def execute_tool(self, name: str, arguments: dict) -> tuple[str, bool]:
-        return await self.mcp_client.call_tool(name, arguments)
+    async def execute_tool(self, name: str, arguments: dict) -> ToolResult:
+        text, is_error = await self.mcp_client.call_tool(name, arguments)
+        return ToolResult(text=text, is_error=is_error)

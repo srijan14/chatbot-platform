@@ -76,9 +76,18 @@ open http://localhost:8000/
 |---|---|---|
 | `CUST001` | Aarav Mehta | Postpaid Pro 599 — happy-path control |
 | `CUST002` | Priya Iyer | Prepaid, **3 days to expiry, 92% data used** — try "my internet feels slow today" |
-| `CUST003` | Rohan Kapoor | Postpaid, **suspended, ₹620 overdue** — try "why is my number not working?" |
+| `CUST003` | Rohan Kapoor | Postpaid, **suspended, ₹299 overdue** — try "why is my number not working?" |
 | `CUST004` | Sneha Reddy | Prepaid, normal — try "I lost my phone" |
 | `CUST005` | Vikram Singh | Postpaid in BLR-04, **active outage** — try "calls keep dropping" |
+| `CUST006` | Ananya Sharma | Postpaid in MUM-01, **3 outstanding bills** — try "pay my bill" → should trigger `ask_clarification` for `bill_id` |
+| `CUST007` | Karan Malhotra | Postpaid Premium 799, **4 active addons, 88% data used** — try "buy more data" → 4 data-pack options → `addon_id` clarification |
+| `CUST008` | Meera Joshi | Prepaid Smart 199, **3 open complaints** (network/billing/service) — try "what's the status of my complaint" → `ticket_id` clarification |
+
+Other prompts that exercise clarification:
+- *"upgrade my plan"* (any customer) — 10 plans across prepaid/postpaid/data-only → must ask which `new_plan_id`.
+- *"recharge my number"* (CUST002, CUST004, CUST008) — needs amount and payment method.
+- *"file a complaint"* (any customer) — needs category (billing/network/service/other) and description.
+- *"block my SIM"* (any customer) — needs reason (lost/stolen/damaged/other).
 
 The web UI has a customer-picker dropdown — switch identity without re-seeding.
 
