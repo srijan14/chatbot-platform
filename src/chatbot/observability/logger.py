@@ -83,8 +83,14 @@ async def log_turn(
     payload: dict[str, Any],
 ) -> None:
     """Persist one turn. `payload` keys follow `TurnLog` columns; `tool_calls`
-    (if present) is JSON-encoded into `tool_calls_json`."""
+    (if present) is JSON-encoded into `tool_calls_json`. Extra observability
+    keys that don't have a column yet (e.g. `signals`) are stripped from the
+    DB row but kept in the stdout + JSONL mirrors."""
     tool_calls = payload.pop("tool_calls", None)
+    # Keys present in the payload for observability/JSONL but not yet on the
+    # TurnLog table. Strip from row kwargs to avoid TypeError on insert.
+    signals = payload.pop("signals", None)
+
     row_kwargs = dict(payload)
     if tool_calls is not None:
         row_kwargs["tool_calls_json"] = json.dumps(tool_calls, default=str)
@@ -93,17 +99,17 @@ async def log_turn(
         s.add(TurnLog(**row_kwargs))
         await s.commit()
 
+    mirror = dict(payload)
+    if tool_calls is not None:
+        mirror["tool_calls"] = tool_calls
+    if signals is not None:
+        mirror["signals"] = signals
+
     if _jsonl_enabled():
-        mirror = dict(payload)
-        if tool_calls is not None:
-            mirror["tool_calls"] = tool_calls
         with TURNS_FILE.open("a") as f:
             f.write(json.dumps(mirror, default=str) + "\n")
 
-    log_payload = dict(payload)
-    if tool_calls is not None:
-        log_payload["tool_calls"] = tool_calls
-    _logger.info("turn", extra={"payload": log_payload})
+    _logger.info("turn", extra={"payload": mirror})
 
 
 @contextmanager
