@@ -178,11 +178,16 @@ class LangGraphOrchestrator:
         try:
             result = await graph.ainvoke(graph_input, config=config)
         except Exception as exc:
+            # Surface the exception type AND message in the response so the
+            # bot can see what actually broke without having to dig through
+            # the structured log. Full traceback still lives in the log via
+            # _log.exception().
             _log.exception("[orch] GRAPH-FAILED trace=%s", trace_id)
             latency_ms = int((time.monotonic() - t_start) * 1000)
+            err_text = f"Sorry, I hit an internal error: {type(exc).__name__}: {exc}"
             return TurnResult(
                 trace_id=trace_id,
-                text=f"Sorry, I hit an internal error: {type(exc).__name__}.",
+                text=err_text,
                 iterations=0,
                 latency_ms=latency_ms,
                 capped=False,
