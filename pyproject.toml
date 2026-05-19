@@ -14,6 +14,17 @@ dependencies = [
     "python-dotenv>=1.0",
     "sqlalchemy[asyncio]>=2.0",
     "aiosqlite>=0.20",
+    # LangGraph orchestration stack
+    "langgraph>=0.2.50",
+    "langchain-core>=0.3.0",
+    "langchain-openai>=0.2.0",
+    "langgraph-checkpoint-sqlite>=2.0",
+    # LlamaIndex NL-SQL stack
+    "llama-index-core>=0.12",
+    "llama-index-llms-azure-openai>=0.3",
+    "llama-index-embeddings-azure-openai>=0.3",
+    # SQL safety for TAG
+    "sqlglot>=25.0",
 ]
 
 [project.optional-dependencies]
