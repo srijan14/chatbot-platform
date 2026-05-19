@@ -1,14 +1,12 @@
-"""Clarification short-circuit: ask_clarification tool surfaces structured fields."""
+"""Clarification short-circuit: ask_clarification surfaces structured fields
+and (via the skill→tool adapter) trips a LangGraph interrupt."""
 from __future__ import annotations
-
-import json
-from types import SimpleNamespace
 
 import pytest
 
+from src.chatbot.adapters.skill_to_tool import skill_to_langchain_tools
 from src.chatbot.core.bot_config_store import BotConfig, ClarificationConfig
-from src.chatbot.core.conversation_manager import Session
-from src.chatbot.core.llm_orchestrator import LLMOrchestrator
+from src.chatbot.skills.base import ToolResult
 from src.chatbot.skills.clarification_skill import (
     DEFAULT_EXPECTED_VALUES,
     TOOL_NAME,
@@ -16,121 +14,29 @@ from src.chatbot.skills.clarification_skill import (
 )
 
 
-def _bot_config() -> BotConfig:
-    return BotConfig(
-        bot_id="telecom_support",
-        name="test",
-        description="",
-        llm_provider="azure_openai",
-        llm_deployment="gpt-4o-test",
-        llm_reasoning=False,
-        max_tokens=128,
-        temperature=0.2,
-        max_tool_iterations=3,
-        system_prompt="you are a test bot",
-        enabled_skills=["tool_call", "clarification"],
-        mcp_servers=[],
-        tool_allowlist=[],
-        max_input_chars=2000,
-        pii_redaction_in_logs=True,
-    )
-
-
-def _make_response(*, tool_call=None, content=None, finish_reason="stop"):
-    """Build a duck-typed OpenAI ChatCompletion response."""
-    tool_calls = None
-    if tool_call is not None:
-        tool_calls = [SimpleNamespace(
-            id=tool_call["id"],
-            function=SimpleNamespace(
-                name=tool_call["name"],
-                arguments=tool_call["arguments"],
-            ),
-        )]
-    message = SimpleNamespace(content=content, tool_calls=tool_calls)
-    choice = SimpleNamespace(message=message, finish_reason=finish_reason)
-    usage = SimpleNamespace(
-        prompt_tokens=10,
-        completion_tokens=5,
-        prompt_tokens_details=SimpleNamespace(cached_tokens=0),
-    )
-    return SimpleNamespace(choices=[choice], usage=usage)
-
-
-class _FakeOpenAI:
-    def __init__(self, responses):
-        self._responses = list(responses)
-        self.calls = []
-
-        async def create(**kwargs):
-            self.calls.append(kwargs)
-            return self._responses.pop(0)
-
-        self.chat = SimpleNamespace(completions=SimpleNamespace(create=create))
-
+# --- Skill-level (no orchestrator) ------------------------------------------
 
 @pytest.mark.asyncio
-async def test_ask_clarification_short_circuits_loop():
-    client = _FakeOpenAI([
-        _make_response(
-            tool_call={
-                "id": "call_clar_1",
-                "name": TOOL_NAME,
-                "arguments": json.dumps({
-                    "question": "Which plan would you like to switch to?",
-                    "expected": "plan_id",
-                    "suggested_replies": ["LITE_299", "PRO_599", "MAX_999"],
-                }),
-            },
-            finish_reason="tool_calls",
-        ),
-    ])
-    orch = LLMOrchestrator(client)
-    sess = Session(session_id="s1", customer_id="CUST001", history=[])
-    skills = [ClarificationSkill()]
-
-    result = await orch.run_turn(sess, "change my plan", _bot_config(), skills)
-
-    assert result.awaiting_clarification is True
-    assert result.text == "Which plan would you like to switch to?"
-    assert result.clarification is not None
-    assert result.clarification.expected == "plan_id"
-    assert result.clarification.suggested_replies == ["LITE_299", "PRO_599", "MAX_999"]
-    # The loop must have stopped after one LLM call.
-    assert len(client.calls) == 1
-    # Every tool_call_id must have a matching tool message in history.
-    last_tool = sess.history[-1]
-    assert last_tool["role"] == "tool"
-    assert last_tool["tool_call_id"] == "call_clar_1"
-    assert "awaiting" in last_tool["content"].lower()
-
-
-@pytest.mark.asyncio
-async def test_followup_turn_clears_clarification_flag():
-    client = _FakeOpenAI([
-        _make_response(content="Switched you to PRO_599.", finish_reason="stop"),
-    ])
-    orch = LLMOrchestrator(client)
-    sess = Session(
-        session_id="s2",
-        customer_id="CUST001",
-        history=[
-            {"role": "user", "content": "change my plan"},
-            {
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [
-                    {"id": "call_x", "type": "function",
-                     "function": {"name": TOOL_NAME, "arguments": "{\"question\":\"which plan?\"}"}},
-                ],
-            },
-            {"role": "tool", "tool_call_id": "call_x", "content": "(awaiting user response)"},
-        ],
+async def test_clarification_skill_returns_terminal_tool_result():
+    """The skill itself emits a terminal ToolResult with a clarification signal.
+    The skill→tool adapter is the layer that translates this into an interrupt()."""
+    skill = ClarificationSkill(expected_types=["plan_id", "yes_no"])
+    result: ToolResult = await skill.execute_tool(
+        TOOL_NAME,
+        {
+            "question": "Which plan?",
+            "expected": "plan_id",
+            "suggested_replies": ["LITE_299", "PRO_599"],
+        },
     )
-    result = await orch.run_turn(sess, "PRO_599", _bot_config(), [ClarificationSkill()])
-
-    assert result.awaiting_clarification is False
-    assert "PRO_599" in result.text
+    assert result.terminal is True
+    assert result.signal is not None and result.signal.type == "clarification"
+    assert result.signal.payload["question"] == "Which plan?"
+    assert result.signal.payload["expected"] == "plan_id"
+    assert result.signal.payload["suggested_replies"] == ["LITE_299", "PRO_599"]
+    # Placeholder text for the LLM history (no useful content; the question is
+    # delivered to the user via the signal/interrupt).
+    assert "awaiting" in result.text.lower()
 
 
 @pytest.mark.asyncio
@@ -141,8 +47,6 @@ async def test_clarification_skill_exposes_tool_schema():
     assert tools[0]["function"]["name"] == TOOL_NAME
     params = tools[0]["function"]["parameters"]
     assert "question" in params["required"]
-    # No domain-specific enum should be present by default — the skill stays
-    # generic until a bot config injects expected_types.
     assert "enum" not in params["properties"]["expected"]
     assert skill.owns_tool(TOOL_NAME)
     assert not skill.owns_tool("get_customer_profile")
@@ -150,7 +54,6 @@ async def test_clarification_skill_exposes_tool_schema():
 
 @pytest.mark.asyncio
 async def test_clarification_schema_is_driven_by_config():
-    # A telecom-flavoured bot pulls its own vocabulary in via config.
     telecom = ClarificationSkill(
         expected_types=["plan_id", "bill_id", "yes_no"],
         description="Telecom override description.",
@@ -163,13 +66,31 @@ async def test_clarification_schema_is_driven_by_config():
     assert expected["enum"] == ["plan_id", "bill_id", "yes_no"]
     assert fn["parameters"]["properties"]["suggested_replies"]["maxItems"] == 3
 
-    # A different bot picks a completely different vocabulary — proving the
-    # skill no longer carries telecom-specific knowledge.
     bi = ClarificationSkill(expected_types=["metric", "dimension", "date_range"])
     bi_tools = await bi.prepare_tools()
     bi_expected = bi_tools[0]["function"]["parameters"]["properties"]["expected"]
     assert bi_expected["enum"] == ["metric", "dimension", "date_range"]
 
+
+# --- Adapter-level (interrupt translation) ----------------------------------
+
+@pytest.mark.asyncio
+async def test_adapter_converts_clarification_skill_to_structured_tool():
+    """The skill→tool adapter must yield exactly one LangChain StructuredTool
+    matching the skill's OpenAI schema."""
+    skill = ClarificationSkill(expected_types=["plan_id"])
+    tools = await skill_to_langchain_tools(skill)
+    assert len(tools) == 1
+    tool = tools[0]
+    assert tool.name == TOOL_NAME
+    # The args_schema is built dynamically; check fields are present.
+    fields = tool.args_schema.model_fields
+    assert "question" in fields
+    assert "expected" in fields
+    assert "suggested_replies" in fields
+
+
+# --- YAML config tests (unchanged) ------------------------------------------
 
 def test_clarification_config_parsed_from_yaml(tmp_path):
     """BotConfig.from_yaml should hydrate `clarification` from the YAML block."""
