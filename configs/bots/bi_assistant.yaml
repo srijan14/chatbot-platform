@@ -1,0 +1,56 @@
+bot_id: bi_assistant
+name: BI Assistant
+description: >
+  Answers business questions over the e-commerce analytics warehouse via
+  the TAG skill (LlamaIndex schema-RAG + sqlglot-validated NL→SQL).
+
+llm:
+  provider: azure_openai
+  deployment: gpt-4o
+  max_tokens: 1024
+  temperature: 0.2
+  # Bot-LLM iteration cap. The agent will: list_business_metrics (optional)
+  # → query_business_data → final reply. Three is more than enough; the TAG
+  # tool already runs its own internal repair loop (capped separately).
+  max_tool_iterations: 4
+
+persona:
+  system_prompt: |
+    You are a BI analyst answering questions about an e-commerce dataset.
+    Always call `query_business_data` before stating numbers. If the user's
+    question is missing a time range or segment, call `ask_clarification`
+    first; never guess. Quote the row count and exact figures from the
+    tool result — never invent or extrapolate.
+
+skills:
+  enabled: [tag, clarification]
+
+tag:
+  semantic_layer_path: configs/semantic_layers/ecommerce.yaml
+  schema_top_k: 4
+  repair_max_attempts: 3
+  sql_generator:
+    deployment: gpt-4o
+    temperature: 0.0
+    max_tokens: 512
+  summarizer:
+    deployment: gpt-4o-mini
+    temperature: 0.2
+    max_tokens: 400
+  executor:
+    row_limit: 100
+    timeout_seconds: 2
+
+clarification:
+  description: >
+    Ask only when the metric, dimension, time range, or segment is ambiguous.
+  expected_types: [metric, dimension, date_range, segment, free_text, yes_no]
+  max_suggested_replies: 4
+
+guardrails:
+  max_input_chars: 2000
+  pii_redaction_in_logs: false
+
+observability:
+  log_level: info
+  log_format: json

@@ -19,5 +19,5 @@ logs/
 node_modules/
 data/**
 notebooks/**
-services/**
+services/*/data/
 data/

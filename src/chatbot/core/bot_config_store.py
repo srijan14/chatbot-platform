@@ -32,6 +32,28 @@ class MCPServerRef:
 
 
 @dataclass
+class TagConfigSpec:
+    """Per-bot config for the TAG skill (parsed; the engine reads it).
+
+    Mirrors `TagConfig` in engines.tag_engine.pipeline but lives here so
+    BotConfig is self-contained and the engine has zero compile-time
+    dependency on chatbot core. The router copies fields across at mount
+    time.
+    """
+    semantic_layer_path: str
+    sql_gen_deployment: str = "gpt-4o"
+    sql_gen_temperature: float = 0.0
+    sql_gen_max_tokens: int = 512
+    summarizer_deployment: str = "gpt-4o-mini"
+    summarizer_temperature: float = 0.2
+    summarizer_max_tokens: int = 400
+    schema_top_k: int = 4
+    row_limit: int = 100
+    repair_max_attempts: int = 3
+    query_timeout_seconds: float = 2.0
+
+
+@dataclass
 class ClarificationConfig:
     """Per-bot config for the synthetic `ask_clarification` tool.
 
@@ -72,6 +94,8 @@ class BotConfig:
     log_format: str = "json"
     # clarification skill (always wired by the router; config is optional)
     clarification: ClarificationConfig = field(default_factory=ClarificationConfig)
+    # tag skill (only required when 'tag' is in enabled_skills)
+    tag: TagConfigSpec | None = None
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "BotConfig":
@@ -114,6 +138,27 @@ class BotConfig:
             description=clarification_raw.get("description"),
             max_suggested_replies=int(clarification_raw.get("max_suggested_replies", 4)),
         )
+
+        tag_raw = data.get("tag") or {}
+        tag_spec: TagConfigSpec | None = None
+        if tag_raw:
+            sql_gen = tag_raw.get("sql_generator") or {}
+            summ = tag_raw.get("summarizer") or {}
+            executor = tag_raw.get("executor") or {}
+            tag_spec = TagConfigSpec(
+                semantic_layer_path=tag_raw["semantic_layer_path"],
+                sql_gen_deployment=sql_gen.get("deployment", "gpt-4o"),
+                sql_gen_temperature=float(sql_gen.get("temperature", 0.0)),
+                sql_gen_max_tokens=int(sql_gen.get("max_tokens", 512)),
+                summarizer_deployment=summ.get("deployment", "gpt-4o-mini"),
+                summarizer_temperature=float(summ.get("temperature", 0.2)),
+                summarizer_max_tokens=int(summ.get("max_tokens", 400)),
+                schema_top_k=int(tag_raw.get("schema_top_k", 4)),
+                row_limit=int(executor.get("row_limit", 100)),
+                repair_max_attempts=int(tag_raw.get("repair_max_attempts", 3)),
+                query_timeout_seconds=float(executor.get("timeout_seconds", 2.0)),
+            )
+
         return cls(
             bot_id=data["bot_id"],
             name=data["name"],
@@ -133,6 +178,7 @@ class BotConfig:
             log_level=observability.get("log_level", "info"),
             log_format=observability.get("log_format", "json"),
             clarification=clarification,
+            tag=tag_spec,
         )
 
 

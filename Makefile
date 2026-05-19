@@ -1,10 +1,11 @@
-.PHONY: install seed reset run telecom_api mcp_telecom chatbot test smoke clean
+.PHONY: install seed reset bi-seed bi-reset run telecom_api mcp_telecom chatbot test smoke clean
 
 install:
 	python -m venv .venv && . .venv/bin/activate && pip install --upgrade pip && \
 	pip install -e . && \
 	pip install -e services/telecom_api && \
 	pip install -e services/mcp_telecom && \
+	pip install -e services/bi_warehouse && \
 	pip install -e ".[dev]"
 
 seed:
@@ -12,6 +13,12 @@ seed:
 
 reset:
 	. .venv/bin/activate && telecom-seed --reset
+
+bi-seed:
+	. .venv/bin/activate && bi-seed
+
+bi-reset:
+	. .venv/bin/activate && bi-seed --reset
 
 telecom_api:
 	. .venv/bin/activate && TELECOM_API_RELOAD=1 telecom-api
