@@ -56,6 +56,19 @@ async def lifespan(app: FastAPI):
             # In-process tally (demo-grade); production would back this with Redis.
             budget_daily_cap=int(os.getenv("CHATBOT_DAILY_TOKEN_CAP", "1000000")),
         )
+
+        # Surface what Azure config the orchestrator actually picked up so a
+        # misconfigured env is caught at boot instead of on the first chat.
+        startup_log = logging.getLogger("chatbot.startup")
+        endpoint = os.getenv("AZURE_OPENAI_ENDPOINT") or "<unset, will fall back to env auto-read>"
+        api_key = os.getenv("AZURE_OPENAI_API_KEY")
+        startup_log.info(
+            "Azure config: endpoint=%s api_key=%s api_version=%s daily_cap=%d",
+            endpoint,
+            f"<set, {len(api_key)} chars>" if api_key else "<unset>",
+            os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21"),
+            int(os.getenv("CHATBOT_DAILY_TOKEN_CAP", "1000000")),
+        )
         app.state.router = BotRouter()
         app.state.conversations = ConversationManager(sessionmaker)
 
@@ -64,7 +77,6 @@ async def lifespan(app: FastAPI):
         # warehouse may not be seeded yet, Azure creds may be missing.
         # In all cases, log clearly and let the first chat request retry —
         # never refuse to start the chatbot service entirely.
-        startup_log = logging.getLogger("chatbot.startup")
         for bot_id in ("telecom_support", "bi_assistant"):
             try:
                 bot_config = app.state.router.get_config(bot_id)

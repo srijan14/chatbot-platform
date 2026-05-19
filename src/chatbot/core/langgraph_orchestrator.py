@@ -82,15 +82,26 @@ class LangGraphOrchestrator:
         return self._budget_store
 
     def _build_llm(self, bot_config: BotConfig) -> AzureChatOpenAI:
-        """Build an Azure chat model bound to this bot's deployment & params."""
-        return AzureChatOpenAI(
-            azure_endpoint=self._azure_endpoint,
-            api_key=self._azure_api_key,
-            api_version=self._azure_api_version,
-            azure_deployment=bot_config.llm_deployment,
-            temperature=bot_config.temperature,
-            max_tokens=bot_config.max_tokens,
-        )
+        """Build an Azure chat model bound to this bot's deployment & params.
+
+        Only passes auth kwargs that have non-empty values, so AzureChatOpenAI's
+        env-var auto-read (AZURE_OPENAI_ENDPOINT / AZURE_OPENAI_API_KEY /
+        OPENAI_API_VERSION) still works when callers didn't supply explicit
+        creds. Passing an empty string would otherwise override the env
+        default with garbage.
+        """
+        kwargs: dict[str, Any] = {
+            "azure_deployment": bot_config.llm_deployment,
+            "temperature": bot_config.temperature,
+            "max_tokens": bot_config.max_tokens,
+        }
+        if self._azure_endpoint:
+            kwargs["azure_endpoint"] = self._azure_endpoint
+        if self._azure_api_key:
+            kwargs["api_key"] = self._azure_api_key
+        if self._azure_api_version:
+            kwargs["api_version"] = self._azure_api_version
+        return AzureChatOpenAI(**kwargs)
 
     async def get_or_build_graph(
         self,
