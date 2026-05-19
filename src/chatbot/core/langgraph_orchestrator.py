@@ -39,12 +39,12 @@ from langchain_openai import AzureChatOpenAI
 from src.chatbot.adapters.skill_to_tool import skill_to_langchain_tools
 from src.chatbot.core.bot_config_store import BotConfig
 from src.chatbot.core.conversation_manager import Session
-from src.chatbot.core.llm_orchestrator import (
+from src.chatbot.core.state import AgentState
+from src.chatbot.core.turn_result import (
     ClarificationData,
     ToolCallTrace,
     TurnResult,
 )
-from src.chatbot.core.state import AgentState
 from src.chatbot.observability.logger import get_logger, new_trace_id, truncate
 from src.chatbot.skills.base import Skill, TurnSignal
 
