@@ -56,23 +56,31 @@ async def lifespan(app: FastAPI):
         app.state.router = BotRouter()
         app.state.conversations = ConversationManager(sessionmaker)
 
-        # Pre-warm the default bot's config and tool list — catches misconfig at
-        # boot rather than at the first chat request. Tool fetch is best-effort:
-        # if a downstream MCP server is down, log clearly and let the first chat
-        # request retry, rather than refusing to start the chatbot at all.
+        # Pre-warm both bots' config + tools + graph. Every step is
+        # best-effort: a downstream MCP server may be down, the BI
+        # warehouse may not be seeded yet, Azure creds may be missing.
+        # In all cases, log clearly and let the first chat request retry —
+        # never refuse to start the chatbot service entirely.
+        startup_log = logging.getLogger("chatbot.startup")
         for bot_id in ("telecom_support", "bi_assistant"):
             try:
                 bot_config = app.state.router.get_config(bot_id)
             except FileNotFoundError:
-                # Bot config not on disk yet (bi_assistant lands in a later
-                # commit). Skip pre-warm; first request will surface the error.
+                # Bot config not on disk; skip pre-warm.
                 continue
-            skills = app.state.router.get_skills(bot_id)
+            try:
+                skills = app.state.router.get_skills(bot_id)
+            except Exception as exc:
+                startup_log.warning(
+                    "get_skills failed for %s (%s: %s); will retry on first chat request.",
+                    bot_id, type(exc).__name__, exc,
+                )
+                continue
             for skill in skills:
                 try:
                     await skill.prepare_tools()
                 except Exception as exc:
-                    logging.getLogger("chatbot.startup").warning(
+                    startup_log.warning(
                         "skill %s prepare_tools failed at boot for %s (%s: %s); "
                         "will retry on first chat request.",
                         getattr(skill, "name", type(skill).__name__),
@@ -81,7 +89,7 @@ async def lifespan(app: FastAPI):
             try:
                 await app.state.orchestrator.get_or_build_graph(bot_config, skills)
             except Exception as exc:
-                logging.getLogger("chatbot.startup").warning(
+                startup_log.warning(
                     "build_graph_for_bot failed for %s (%s: %s); "
                     "will retry on first chat request.",
                     bot_id, type(exc).__name__, exc,

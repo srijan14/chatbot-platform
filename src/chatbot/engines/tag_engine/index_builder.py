@@ -40,9 +40,20 @@ def build_tag_index(
     AzureOpenAIEmbedding). We pass it explicitly so callers control which
     embedding deployment is used, and tests can inject a fake.
     """
-    # Read-only sqlite URI: the database file is opened in mode=ro so a
-    # forgotten safety check downstream cannot write to it.
-    ro_uri = f"sqlite:///file:{semantic_layer.database_path}?mode=ro&uri=true"
+    # Resolve to absolute so the URI doesn't depend on cwd; sqlite mode=ro
+    # refuses to create the file if missing, so check up front for a
+    # human-readable error instead of SQLAlchemy's generic
+    # "unable to open database file".
+    db_path = semantic_layer.database_path.resolve()
+    if not db_path.exists():
+        raise FileNotFoundError(
+            f"BI warehouse not found at {db_path}. Run `make bi-seed` "
+            f"(or `bi-seed --reset`) to create and populate it."
+        )
+
+    # Read-only sqlite URI: file is opened in mode=ro so a forgotten safety
+    # check downstream cannot write to it.
+    ro_uri = f"sqlite:///file:{db_path}?mode=ro&uri=true"
     engine = create_engine(ro_uri, future=True)
 
     table_names = [t.name for t in semantic_layer.tables]
