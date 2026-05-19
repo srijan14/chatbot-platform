@@ -1,6 +1,6 @@
 """Build LlamaIndex artefacts for the TAG pipeline.
 
-Two pieces of LlamaIndex used:
+Three pieces of LlamaIndex used:
   • `SQLDatabase` — thin wrapper over a SQLAlchemy engine that gives the rest
     of LlamaIndex tabular introspection helpers (schema, sample rows). We
     open with a read-only `?mode=ro` sqlite URI so even if downstream code
@@ -9,6 +9,12 @@ Two pieces of LlamaIndex used:
     (from the semantic layer) so the retriever can pick the most relevant
     tables for a given user question. Required for schemas with >~20 tables;
     cheap insurance even for our 6-table demo.
+  • `NLSQLRetriever` in `sql_only=True` mode — LlamaIndex's framework-native
+    NL→SQL primitive. Composes the SQLDatabase + the ObjectIndex retriever
+    + the configured LLM into a single retrieve() call that emits SQL
+    grounded in the relevant tables. We layer our own sqlglot validator,
+    read-only executor, and repair loop on top — LlamaIndex does the
+    NL→SQL part; we own everything downstream.
 """
 from __future__ import annotations
 
@@ -17,6 +23,7 @@ from typing import Any
 
 from llama_index.core import SQLDatabase, VectorStoreIndex
 from llama_index.core.objects import ObjectIndex, SQLTableNodeMapping, SQLTableSchema
+from llama_index.core.retrievers import NLSQLRetriever
 from sqlalchemy import create_engine
 
 from src.chatbot.engines.tag_engine.semantic_layer import SemanticLayer
@@ -27,18 +34,24 @@ class TagIndex:
     """Pre-built LlamaIndex artefacts used by the TAG pipeline."""
     sql_database: SQLDatabase
     object_index: ObjectIndex
+    nl_sql_retriever: NLSQLRetriever
     semantic_layer: SemanticLayer
 
 
 def build_tag_index(
     semantic_layer: SemanticLayer,
     embed_model: Any,
+    llm: Any,
+    *,
+    schema_top_k: int = 4,
 ) -> TagIndex:
-    """Construct LlamaIndex's SQLDatabase + ObjectIndex for this warehouse.
+    """Construct LlamaIndex's SQLDatabase + ObjectIndex + NLSQLRetriever.
 
     `embed_model` is a LlamaIndex `BaseEmbedding`-shaped object (e.g.
-    AzureOpenAIEmbedding). We pass it explicitly so callers control which
-    embedding deployment is used, and tests can inject a fake.
+    AzureOpenAIEmbedding); `llm` is a LlamaIndex `LLM`-shaped object
+    (e.g. AzureOpenAI from llama_index.llms.azure_openai). Both are
+    passed explicitly so callers control which deployments are used,
+    and tests can inject fakes (MockEmbedding / MockLLM).
     """
     # Resolve to absolute so the URI doesn't depend on cwd; sqlite mode=ro
     # refuses to create the file if missing, so check up front for a
@@ -73,8 +86,22 @@ def build_tag_index(
         embed_model=embed_model,
     )
 
+    # NL→SQL retriever composes SQLDatabase + the ObjectIndex-backed table
+    # retriever + the SQL-gen LLM. With sql_only=True, retrieve() returns
+    # nodes whose text is the SQL (no execution — we own that downstream
+    # via our sqlglot validator + read-only sqlite executor).
+    nl_sql_retriever = NLSQLRetriever(
+        sql_database=sql_database,
+        table_retriever=object_index.as_retriever(similarity_top_k=schema_top_k),
+        llm=llm,
+        sql_only=True,
+        return_raw=True,
+        verbose=False,
+    )
+
     return TagIndex(
         sql_database=sql_database,
         object_index=object_index,
+        nl_sql_retriever=nl_sql_retriever,
         semantic_layer=semantic_layer,
     )

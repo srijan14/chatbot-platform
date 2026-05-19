@@ -1,24 +1,25 @@
-"""Graph state for the LangGraph orchestrator.
+"""Graph state for the LangChain v1 agent.
 
-Mirrors LangGraph's prebuilt `AgentState` (messages + remaining_steps —
-the latter is required by `create_react_agent` even though it's marked
-NotRequired in the type hint) and extends it with per-session metadata
-the prompt callable reads.
+Subclasses `langchain.agents.AgentState` (which provides `messages`, `jump_to`,
+and `structured_response`) with the per-session metadata our middlewares need:
+  • bot_id / customer_id — read by the dynamic-prompt middleware
+  • token_*_used — populated by the token-usage middleware after each model call
 
-The checkpointer persists this whole dict per session, so values written
-once at turn start are available on graph resume after an interrupt.
+The checkpointer persists this whole dict per session, so values written once
+at turn start are available on graph resume after an interrupt.
 """
 from __future__ import annotations
 
-from typing import Annotated, NotRequired, Sequence, TypedDict
+from typing import NotRequired
 
-from langchain_core.messages import BaseMessage
-from langgraph.graph.message import add_messages
-from langgraph.managed import RemainingSteps
+from langchain.agents import AgentState
 
 
-class AgentState(TypedDict):
-    messages: Annotated[Sequence[BaseMessage], add_messages]
-    remaining_steps: NotRequired[RemainingSteps]
+class ChatbotAgentState(AgentState):
     bot_id: NotRequired[str]
     customer_id: NotRequired[str | None]
+    # Populated by token_usage_middleware after each model call. The chat
+    # handler reads these off final state instead of scanning messages.
+    prompt_tokens_used: NotRequired[int]
+    completion_tokens_used: NotRequired[int]
+    cached_tokens_used: NotRequired[int]

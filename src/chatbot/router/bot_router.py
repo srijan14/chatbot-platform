@@ -65,15 +65,21 @@ class BotRouter:
 
 def _build_tag_skill(cfg: BotConfig):
     """Wire the TAG engine. Lazy-imported so the (heavier) LlamaIndex deps
-    don't load for bots that don't enable TAG."""
+    don't load for bots that don't enable TAG.
+
+    SQL generation now runs through LlamaIndex's `NLSQLRetriever` configured
+    at index-build time with a LlamaIndex AzureOpenAI LLM (separate from the
+    LangChain Azure model used by the bot orchestrator and our summarizer —
+    LlamaIndex and LangChain don't share LLM wrappers).
+    """
     from llama_index.embeddings.azure_openai import AzureOpenAIEmbedding
+    from llama_index.llms.azure_openai import AzureOpenAI as LIAzureOpenAI
 
     from src.chatbot.engines.tag_engine.index_builder import build_tag_index
     from src.chatbot.engines.tag_engine.pipeline import TagConfig, TagPipeline
     from src.chatbot.engines.tag_engine.semantic_layer import SemanticLayer
     from src.chatbot.engines.tag_engine.summarizer import make_summarizer
     from src.chatbot.skills.tag_skill import TagSkill
-    from langchain_openai import AzureChatOpenAI
 
     spec = cfg.tag
     assert spec is not None  # guarded by caller
@@ -85,7 +91,6 @@ def _build_tag_skill(cfg: BotConfig):
 
     semantic_layer = SemanticLayer.from_yaml(spec.semantic_layer_path)
 
-    # Azure embeddings for the ObjectIndex (per-table summaries).
     embed_model = AzureOpenAIEmbedding(
         model=embed_deployment,
         deployment_name=embed_deployment,
@@ -93,16 +98,25 @@ def _build_tag_skill(cfg: BotConfig):
         api_key=azure_api_key,
         api_version=azure_api_version,
     )
-    index = build_tag_index(semantic_layer, embed_model=embed_model)
 
-    sql_gen_llm = AzureChatOpenAI(
+    # LlamaIndex's own AzureOpenAI wrapper, used by NLSQLRetriever for SQL gen.
+    li_sql_gen_llm = LIAzureOpenAI(
+        engine=spec.sql_gen_deployment,
+        model=spec.sql_gen_deployment,
         azure_endpoint=azure_endpoint,
         api_key=azure_api_key,
         api_version=azure_api_version,
-        azure_deployment=spec.sql_gen_deployment,
         temperature=spec.sql_gen_temperature,
         max_tokens=spec.sql_gen_max_tokens,
     )
+
+    index = build_tag_index(
+        semantic_layer,
+        embed_model=embed_model,
+        llm=li_sql_gen_llm,
+        schema_top_k=spec.schema_top_k,
+    )
+
     summarizer_llm = make_summarizer(
         azure_endpoint=azure_endpoint,
         azure_api_key=azure_api_key,
@@ -114,7 +128,6 @@ def _build_tag_skill(cfg: BotConfig):
 
     pipeline = TagPipeline(
         index,
-        sql_gen_llm=sql_gen_llm,
         summarizer_llm=summarizer_llm,
         config=TagConfig(
             semantic_layer_path=spec.semantic_layer_path,
