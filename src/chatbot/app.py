@@ -72,6 +72,31 @@ async def lifespan(app: FastAPI):
         app.state.router = BotRouter()
         app.state.conversations = ConversationManager(sessionmaker)
 
+        # Tiny LLM ping so credential / deployment / API-version failures
+        # surface at boot with the full exception text in the log, instead
+        # of bubbling out of the first chat request as a generic
+        # "GRAPH-FAILED" with nothing to debug from.
+        try:
+            from langchain_core.messages import HumanMessage
+            probe_cfg = app.state.router.get_config("telecom_support") if Path("configs/bots/telecom_support.yaml").exists() else None
+            if probe_cfg is not None:
+                probe_llm = app.state.orchestrator._build_llm(probe_cfg)
+                probe_resp = await probe_llm.ainvoke([HumanMessage(content="ping")])
+                startup_log.info(
+                    "Azure LLM ping OK: deployment=%s response=%r",
+                    probe_cfg.llm_deployment,
+                    (probe_resp.content or "")[:40] if hasattr(probe_resp, "content") else "<no content>",
+                )
+        except FileNotFoundError:
+            pass
+        except Exception as exc:
+            startup_log.error(
+                "Azure LLM ping FAILED at boot: %s: %s. "
+                "First chat request will fail with the same error.",
+                type(exc).__name__, exc,
+                exc_info=True,
+            )
+
         # Pre-warm both bots' config + tools + graph. Every step is
         # best-effort: a downstream MCP server may be down, the BI
         # warehouse may not be seeded yet, Azure creds may be missing.
