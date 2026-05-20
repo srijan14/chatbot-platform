@@ -10,9 +10,14 @@ from pathlib import Path
 import yaml
 
 
-# Matches o1, o1-mini, o3-mini-prod, my-o4-mini, etc. Misses opaque names like
-# 'production-bot' — for those, set llm.reasoning: true in the YAML.
-_REASONING_PATTERN = re.compile(r"(?:^|[-_/])o[1-9](?:[-_/]|$)")
+# Matches o-series (o1, o3-mini, my-o4-mini, …) and gpt-5+ family
+# (gpt-5, gpt-5-mini, gpt-5o, gpt-6-thinking, …) — both reject custom
+# temperature and use max_completion_tokens. Misses opaque names like
+# 'production-bot'; set llm.reasoning: true in the YAML for those.
+_REASONING_PATTERN = re.compile(
+    r"(?:^|[-_/])(o[1-9]|gpt-[5-9])(?:[-_/o]|$)",
+    re.IGNORECASE,
+)
 
 
 def is_reasoning_deployment(name: str) -> bool:

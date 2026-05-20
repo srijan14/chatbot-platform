@@ -89,10 +89,15 @@ class LangGraphOrchestrator:
         OPENAI_API_VERSION) still works when callers didn't supply explicit
         creds. Passing an empty string would otherwise override the env
         default with garbage.
+
+        Reasoning models (o1/o3/o4-mini, gpt-5, etc.) reject custom
+        `temperature` — only the server default (1.0) is allowed. When
+        `llm_reasoning` is set on the bot config (auto-detected from the
+        deployment name regex, or explicit via YAML `llm.reasoning: true`),
+        we omit temperature entirely so Azure uses its default.
         """
         kwargs: dict[str, Any] = {
             "azure_deployment": bot_config.llm_deployment,
-            "temperature": bot_config.temperature,
             "max_tokens": bot_config.max_tokens,
         }
         if self._azure_endpoint:
@@ -101,6 +106,11 @@ class LangGraphOrchestrator:
             kwargs["api_key"] = self._azure_api_key
         if self._azure_api_version:
             kwargs["api_version"] = self._azure_api_version
+        # Only set temperature for non-reasoning models; o-series + gpt-5
+        # require the default (1.0) and reject anything else.
+        if not bot_config.llm_reasoning:
+            kwargs["temperature"] = bot_config.temperature
+
         return AzureChatOpenAI(**kwargs)
 
     async def get_or_build_graph(
