@@ -50,7 +50,7 @@ async def lifespan(app: FastAPI):
         app.state.orchestrator = LangGraphOrchestrator(
             azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", ""),
             azure_api_key=os.getenv("AZURE_OPENAI_API_KEY", ""),
-            azure_api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21"),
+            azure_api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2025-01-01-preview"),
             checkpointer=checkpointer,
             # Per-customer daily token cap; enforced by BudgetGuardMiddleware.
             # In-process tally (demo-grade); production would back this with Redis.
@@ -66,7 +66,7 @@ async def lifespan(app: FastAPI):
             "Azure config: endpoint=%s api_key=%s api_version=%s daily_cap=%d",
             endpoint,
             f"<set, {len(api_key)} chars>" if api_key else "<unset>",
-            os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21"),
+            os.getenv("AZURE_OPENAI_API_VERSION", "2025-01-01-preview"),
             int(os.getenv("CHATBOT_DAILY_TOKEN_CAP", "1000000")),
         )
         app.state.router = BotRouter()

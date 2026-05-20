@@ -82,6 +82,7 @@ def _build_tag_skill(cfg: BotConfig):
     `bot_config.llm_reasoning` (and re-check per-stage deployment name) and
     omit the temperature kwarg when the stage's deployment is reasoning.
     """
+    from llama_index.core import Settings
     from llama_index.embeddings.azure_openai import AzureOpenAIEmbedding
     from llama_index.llms.azure_openai import AzureOpenAI as LIAzureOpenAI
 
@@ -96,7 +97,7 @@ def _build_tag_skill(cfg: BotConfig):
 
     azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "")
     azure_api_key = os.getenv("AZURE_OPENAI_API_KEY", "")
-    azure_api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
+    azure_api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2025-01-01-preview")
 
     sql_gen_deployment = (
         os.getenv("AZURE_OPENAI_SQL_GEN_DEPLOYMENT")
@@ -130,17 +131,37 @@ def _build_tag_skill(cfg: BotConfig):
     )
 
     # LlamaIndex AzureOpenAI for NLSQLRetriever's SQL generation.
+    # LangChain's AzureChatOpenAI auto-converts `max_tokens` →
+    # `max_completion_tokens` for o-series deployments, but LlamaIndex does
+    # not — so we route the token cap through `additional_kwargs` when the
+    # deployment is reasoning-class so the right parameter goes on the wire.
     sql_gen_kwargs: dict = {
         "engine": sql_gen_deployment,
         "model": sql_gen_deployment,
         "azure_endpoint": azure_endpoint,
         "api_key": azure_api_key,
         "api_version": azure_api_version,
-        "max_tokens": spec.sql_gen_max_tokens,
     }
-    if not sql_gen_is_reasoning:
+    if sql_gen_is_reasoning:
+        sql_gen_kwargs["additional_kwargs"] = {
+            "max_completion_tokens": spec.sql_gen_max_tokens
+        }
+        # LlamaIndex AzureOpenAI's default temperature is 0.1 — Azure rejects
+        # any non-default temperature for o-series. Set to 1.0 explicitly so
+        # the request matches what o-series accepts.
+        sql_gen_kwargs["temperature"] = 1.0
+    else:
+        sql_gen_kwargs["max_tokens"] = spec.sql_gen_max_tokens
         sql_gen_kwargs["temperature"] = spec.sql_gen_temperature
     li_sql_gen_llm = LIAzureOpenAI(**sql_gen_kwargs)
+
+    # Set the global LlamaIndex Settings so any auxiliary call inside the
+    # retriever / object index that consults `Settings.llm` /
+    # `Settings.embed_model` uses our explicit Azure clients instead of
+    # falling back to the OpenAI default (which would fail without
+    # OPENAI_API_KEY).
+    Settings.llm = li_sql_gen_llm
+    Settings.embed_model = embed_model
 
     index = build_tag_index(
         semantic_layer,

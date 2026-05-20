@@ -6,9 +6,11 @@ description: >
 
 llm:
   provider: azure_openai
-  deployment: gpt-4o
-  max_tokens: 1024
-  temperature: 0.2
+  deployment: o4-mini
+  # For reasoning models max_tokens becomes max_completion_tokens — covers
+  # both the model's internal reasoning trace and the final output.
+  max_tokens: 4096
+  temperature: 0.2          # ignored for reasoning models
   # Bot-LLM iteration cap. The agent will: list_business_metrics (optional)
   # → query_business_data → final reply. Three is more than enough; the TAG
   # tool already runs its own internal repair loop (capped separately).
@@ -35,12 +37,14 @@ tag:
   # Override via env (AZURE_OPENAI_SQL_GEN_DEPLOYMENT,
   # AZURE_OPENAI_SUMMARIZER_DEPLOYMENT, AZURE_OPENAI_EMBED_DEPLOYMENT) or by
   # adding `deployment: <name>` under sql_generator / summarizer below.
+  # NB: with o4-mini both stages need generous max_tokens because the field
+  # is really max_completion_tokens (covers internal reasoning + output).
   sql_generator:
-    temperature: 0.0
-    max_tokens: 512
+    temperature: 0.0        # ignored for reasoning models
+    max_tokens: 2048
   summarizer:
-    temperature: 0.2
-    max_tokens: 400
+    temperature: 0.2        # ignored for reasoning models
+    max_tokens: 2048
 
   executor:
     row_limit: 100
