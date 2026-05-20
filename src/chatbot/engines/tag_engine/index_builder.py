@@ -1,20 +1,21 @@
 """Build LlamaIndex artefacts for the TAG pipeline.
 
-Three pieces of LlamaIndex used:
-  • `SQLDatabase` — thin wrapper over a SQLAlchemy engine that gives the rest
-    of LlamaIndex tabular introspection helpers (schema, sample rows). We
-    open with a read-only `?mode=ro` sqlite URI so even if downstream code
-    forgets to validate, the connection itself cannot mutate.
-  • `ObjectIndex` over `SQLTableSchema` — embeds each table's description
-    (from the semantic layer) so the retriever can pick the most relevant
-    tables for a given user question. Required for schemas with >~20 tables;
-    cheap insurance even for our 6-table demo.
-  • `NLSQLRetriever` in `sql_only=True` mode — LlamaIndex's framework-native
-    NL→SQL primitive. Composes the SQLDatabase + the ObjectIndex retriever
-    + the configured LLM into a single retrieve() call that emits SQL
-    grounded in the relevant tables. We layer our own sqlglot validator,
-    read-only executor, and repair loop on top — LlamaIndex does the
-    NL→SQL part; we own everything downstream.
+Two NLSQLRetriever shapes depending on whether the deployment has an
+embeddings model:
+
+  • With embeddings  — build an `ObjectIndex` over per-table descriptions
+    (the LlamaIndex schema-RAG pattern). NLSQLRetriever's `table_retriever`
+    picks the top-K relevant tables per question. Required for schemas
+    with many tables (don't want to dump every DDL into the prompt).
+
+  • Without embeddings — pass `tables=[<all table names>]` to NLSQLRetriever
+    directly. No retrieval, the full DDL of every configured table goes
+    into the SQL-gen prompt. Fine for the 6-table demo warehouse; would
+    be wasteful for a 500-table production schema.
+
+This split exists because most Azure OpenAI resources only deploy a chat
+model (e.g. o4-mini) and don't have an embeddings deployment. The TAG
+skill should work either way.
 """
 from __future__ import annotations
 
@@ -27,36 +28,37 @@ from llama_index.core.retrievers import NLSQLRetriever
 from sqlalchemy import create_engine
 
 from src.chatbot.engines.tag_engine.semantic_layer import SemanticLayer
+from src.chatbot.observability.logger import get_logger
+
+_log = get_logger("tag")
 
 
 @dataclass
 class TagIndex:
     """Pre-built LlamaIndex artefacts used by the TAG pipeline."""
     sql_database: SQLDatabase
-    object_index: ObjectIndex
+    object_index: ObjectIndex | None     # None when embeddings aren't available
     nl_sql_retriever: NLSQLRetriever
     semantic_layer: SemanticLayer
 
 
 def build_tag_index(
     semantic_layer: SemanticLayer,
-    embed_model: Any,
     llm: Any,
     *,
+    embed_model: Any | None = None,
     schema_top_k: int = 4,
 ) -> TagIndex:
-    """Construct LlamaIndex's SQLDatabase + ObjectIndex + NLSQLRetriever.
+    """Construct LlamaIndex's SQLDatabase + (optional ObjectIndex) + NLSQLRetriever.
 
-    `embed_model` is a LlamaIndex `BaseEmbedding`-shaped object (e.g.
-    AzureOpenAIEmbedding); `llm` is a LlamaIndex `LLM`-shaped object
-    (e.g. AzureOpenAI from llama_index.llms.azure_openai). Both are
-    passed explicitly so callers control which deployments are used,
-    and tests can inject fakes (MockEmbedding / MockLLM).
+    If `embed_model` is provided, builds an ObjectIndex over per-table
+    descriptions and wires it as the NLSQLRetriever's `table_retriever`
+    (schema-RAG mode). If `embed_model` is None, skips the ObjectIndex
+    and configures NLSQLRetriever with the full table list (no retrieval).
+
+    Either way, `llm` (a LlamaIndex `LLM`-shaped object) drives the
+    NL→SQL generation.
     """
-    # Resolve to absolute so the URI doesn't depend on cwd; sqlite mode=ro
-    # refuses to create the file if missing, so check up front for a
-    # human-readable error instead of SQLAlchemy's generic
-    # "unable to open database file".
     db_path = semantic_layer.database_path.resolve()
     if not db_path.exists():
         raise FileNotFoundError(
@@ -64,40 +66,57 @@ def build_tag_index(
             f"(or `bi-seed --reset`) to create and populate it."
         )
 
-    # Read-only sqlite URI: file is opened in mode=ro so a forgotten safety
-    # check downstream cannot write to it.
     ro_uri = f"sqlite:///file:{db_path}?mode=ro&uri=true"
     engine = create_engine(ro_uri, future=True)
 
     table_names = [t.name for t in semantic_layer.tables]
     sql_database = SQLDatabase(engine, include_tables=table_names)
 
-    # ObjectIndex over per-table summaries — the retriever returns the most
-    # relevant SQLTableSchema(s) for a given NL question.
-    table_node_mapping = SQLTableNodeMapping(sql_database)
-    table_schema_objs = [
-        SQLTableSchema(table_name=t.name, context_str=t.description)
-        for t in semantic_layer.tables
-    ]
-    object_index = ObjectIndex.from_objects(
-        table_schema_objs,
-        table_node_mapping,
-        VectorStoreIndex,
-        embed_model=embed_model,
-    )
-
-    # NL→SQL retriever composes SQLDatabase + the ObjectIndex-backed table
-    # retriever + the SQL-gen LLM. With sql_only=True, retrieve() returns
-    # nodes whose text is the SQL (no execution — we own that downstream
-    # via our sqlglot validator + read-only sqlite executor).
-    nl_sql_retriever = NLSQLRetriever(
-        sql_database=sql_database,
-        table_retriever=object_index.as_retriever(similarity_top_k=schema_top_k),
-        llm=llm,
-        sql_only=True,
-        return_raw=True,
-        verbose=False,
-    )
+    object_index: ObjectIndex | None = None
+    if embed_model is not None:
+        # Schema-RAG path: embed per-table descriptions; the retriever picks
+        # the top-K most relevant tables per question.
+        table_node_mapping = SQLTableNodeMapping(sql_database)
+        table_schema_objs = [
+            SQLTableSchema(table_name=t.name, context_str=t.description)
+            for t in semantic_layer.tables
+        ]
+        object_index = ObjectIndex.from_objects(
+            table_schema_objs,
+            table_node_mapping,
+            VectorStoreIndex,
+            embed_model=embed_model,
+        )
+        nl_sql_retriever = NLSQLRetriever(
+            sql_database=sql_database,
+            table_retriever=object_index.as_retriever(similarity_top_k=schema_top_k),
+            llm=llm,
+            sql_only=True,
+            return_raw=True,
+            verbose=False,
+        )
+        _log.info(
+            "[tag] INDEX-BUILT mode=schema_rag tables=%d top_k=%d",
+            len(table_names), schema_top_k,
+        )
+    else:
+        # No-embeddings fallback: pass all tables to NLSQLRetriever. The
+        # retriever's text-to-sql prompt will see every table's DDL — fine
+        # for small schemas; expensive in tokens for large ones.
+        nl_sql_retriever = NLSQLRetriever(
+            sql_database=sql_database,
+            tables=table_names,
+            llm=llm,
+            sql_only=True,
+            return_raw=True,
+            verbose=False,
+        )
+        _log.info(
+            "[tag] INDEX-BUILT mode=no_embeddings tables=%d "
+            "(full DDL goes into prompt; set AZURE_OPENAI_EMBED_DEPLOYMENT "
+            "to enable schema RAG)",
+            len(table_names),
+        )
 
     return TagIndex(
         sql_database=sql_database,

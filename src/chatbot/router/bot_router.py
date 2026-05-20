@@ -109,10 +109,15 @@ def _build_tag_skill(cfg: BotConfig):
         or spec.summarizer_deployment
         or cfg.llm_deployment
     )
+    # Embeddings deployment has NO chat-model fallback — chat and embedding
+    # are different model families. If neither YAML nor env supplies one,
+    # we skip ObjectIndex entirely and pass all tables to NLSQLRetriever
+    # directly (no schema RAG). Fine for the demo warehouse; suboptimal
+    # for huge schemas.
     embed_deployment = (
         os.getenv("AZURE_OPENAI_EMBED_DEPLOYMENT")
         or spec.embed_deployment
-        or "text-embedding-3-small"
+        # No 'or cfg.llm_deployment' — chat models can't do embeddings.
     )
 
     # Reasoning models reject custom temperature. We resolve per-stage —
@@ -122,13 +127,15 @@ def _build_tag_skill(cfg: BotConfig):
 
     semantic_layer = SemanticLayer.from_yaml(spec.semantic_layer_path)
 
-    embed_model = AzureOpenAIEmbedding(
-        model=embed_deployment,
-        deployment_name=embed_deployment,
-        azure_endpoint=azure_endpoint,
-        api_key=azure_api_key,
-        api_version=azure_api_version,
-    )
+    embed_model = None
+    if embed_deployment:
+        embed_model = AzureOpenAIEmbedding(
+            model=embed_deployment,
+            deployment_name=embed_deployment,
+            azure_endpoint=azure_endpoint,
+            api_key=azure_api_key,
+            api_version=azure_api_version,
+        )
 
     # LlamaIndex AzureOpenAI for NLSQLRetriever's SQL generation.
     # LangChain's AzureChatOpenAI auto-converts `max_tokens` →
@@ -161,12 +168,13 @@ def _build_tag_skill(cfg: BotConfig):
     # falling back to the OpenAI default (which would fail without
     # OPENAI_API_KEY).
     Settings.llm = li_sql_gen_llm
-    Settings.embed_model = embed_model
+    if embed_model is not None:
+        Settings.embed_model = embed_model
 
     index = build_tag_index(
         semantic_layer,
-        embed_model=embed_model,
         llm=li_sql_gen_llm,
+        embed_model=embed_model,
         schema_top_k=spec.schema_top_k,
     )
 

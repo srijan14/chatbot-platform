@@ -56,20 +56,26 @@ class CannedLLM(CustomLLM):
         raise NotImplementedError()
 
 
-def _build_pipeline(sql_responses: list[str], summary_responses: list[str]) -> TagPipeline:
+def _build_pipeline(
+    sql_responses: list[str],
+    summary_responses: list[str],
+    *,
+    use_embeddings: bool = True,
+) -> TagPipeline:
     sl = SemanticLayer.from_yaml(SEMANTIC_LAYER)
     sql_gen_llm = CannedLLM(responses=sql_responses)
     summarizer = GenericFakeChatModel(messages=iter([AIMessage(content=c) for c in summary_responses]))
-    mock_embed = MockEmbedding(embed_dim=8)
+    mock_embed = MockEmbedding(embed_dim=8) if use_embeddings else None
     # NLSQLRetriever and ObjectIndex both consult the global Settings.embed_model
     # in places where the explicit param doesn't propagate; setting the global
     # avoids "no OPENAI_API_KEY" errors when LlamaIndex hits its default.
-    Settings.embed_model = mock_embed
+    if mock_embed is not None:
+        Settings.embed_model = mock_embed
     Settings.llm = sql_gen_llm
     index = build_tag_index(
         sl,
-        embed_model=mock_embed,
         llm=sql_gen_llm,
+        embed_model=mock_embed,
         schema_top_k=4,
     )
     cfg = TagConfig(
@@ -137,3 +143,19 @@ async def test_list_metrics_returns_semantic_summary():
     assert "dimensions:" in text.lower()
     assert "gross_revenue" in text
     assert "customer_segment" in text
+
+
+@pytest.mark.asyncio
+async def test_no_embeddings_mode_still_answers():
+    """The schema-RAG path is optional; without an embeddings deployment we
+    fall back to passing every table directly to NLSQLRetriever. The
+    pipeline must keep working end-to-end (validation + execution + summary)
+    against the same warehouse."""
+    pipeline = _build_pipeline(
+        sql_responses=["SELECT COUNT(*) FROM customers"],
+        summary_responses=["There are some number of customers."],
+        use_embeddings=False,
+    )
+    result = await pipeline.answer("How many customers?")
+    assert result.rows[0][0] >= 1
+    assert "SELECT" in result.sql.upper()
