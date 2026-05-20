@@ -29,14 +29,19 @@ tag:
   semantic_layer_path: configs/semantic_layers/ecommerce.yaml
   schema_top_k: 4
   repair_max_attempts: 3
+
+  # Per-stage deployments — leave unset to reuse the bot's main `llm.deployment`
+  # (so a single Azure model serves NL→SQL gen and the prose summarizer).
+  # Override via env (AZURE_OPENAI_SQL_GEN_DEPLOYMENT,
+  # AZURE_OPENAI_SUMMARIZER_DEPLOYMENT, AZURE_OPENAI_EMBED_DEPLOYMENT) or by
+  # adding `deployment: <name>` under sql_generator / summarizer below.
   sql_generator:
-    deployment: gpt-4o
     temperature: 0.0
     max_tokens: 512
   summarizer:
-    deployment: gpt-4o-mini
     temperature: 0.2
     max_tokens: 400
+
   executor:
     row_limit: 100
     timeout_seconds: 2

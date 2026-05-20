@@ -30,16 +30,25 @@ def make_summarizer(
     azure_api_version: str,
     deployment: str,
     max_tokens: int = 400,
-    temperature: float = 0.2,
+    temperature: float | None = 0.2,
 ) -> AzureChatOpenAI:
-    return AzureChatOpenAI(
-        azure_endpoint=azure_endpoint,
-        api_key=azure_api_key,
-        api_version=azure_api_version,
-        azure_deployment=deployment,
-        max_tokens=max_tokens,
-        temperature=temperature,
-    )
+    """Build the dedicated summarizer LLM.
+
+    Pass `temperature=None` to omit the kwarg entirely — required when the
+    deployment is a reasoning-class model (o-series, gpt-5+) which rejects
+    any non-default temperature. AzureChatOpenAI then leaves the field
+    unset and Azure uses its server default of 1.0.
+    """
+    kwargs: dict = {
+        "azure_endpoint": azure_endpoint,
+        "api_key": azure_api_key,
+        "api_version": azure_api_version,
+        "azure_deployment": deployment,
+        "max_tokens": max_tokens,
+    }
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+    return AzureChatOpenAI(**kwargs)
 
 
 def render_rows_as_markdown(columns: list[str], rows: list[tuple], max_rows: int = 30) -> str:

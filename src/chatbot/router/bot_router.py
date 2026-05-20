@@ -9,7 +9,11 @@ tool_call, RAG, TAG, etc. on the same footing.
 """
 import os
 
-from src.chatbot.core.bot_config_store import BotConfig, load_bot_config
+from src.chatbot.core.bot_config_store import (
+    BotConfig,
+    is_reasoning_deployment,
+    load_bot_config,
+)
 from src.chatbot.engines.tool_engine.mcp_client import MCPClient
 from src.chatbot.skills.base import Skill
 from src.chatbot.skills.clarification_skill import ClarificationSkill
@@ -67,10 +71,16 @@ def _build_tag_skill(cfg: BotConfig):
     """Wire the TAG engine. Lazy-imported so the (heavier) LlamaIndex deps
     don't load for bots that don't enable TAG.
 
-    SQL generation now runs through LlamaIndex's `NLSQLRetriever` configured
-    at index-build time with a LlamaIndex AzureOpenAI LLM (separate from the
-    LangChain Azure model used by the bot orchestrator and our summarizer —
-    LlamaIndex and LangChain don't share LLM wrappers).
+    Deployment resolution order (per stage):
+      1. Stage-specific YAML override (`tag.sql_generator.deployment`,
+         `tag.summarizer.deployment`, `tag.embed_deployment`)
+      2. Stage-specific env var (AZURE_OPENAI_SQL_GEN_DEPLOYMENT,
+         AZURE_OPENAI_SUMMARIZER_DEPLOYMENT, AZURE_OPENAI_EMBED_DEPLOYMENT)
+      3. The bot's main `llm.deployment` (i.e. the same model the bot LLM uses)
+
+    Reasoning models (o-series, gpt-5+) reject custom temperature; we honor
+    `bot_config.llm_reasoning` (and re-check per-stage deployment name) and
+    omit the temperature kwarg when the stage's deployment is reasoning.
     """
     from llama_index.embeddings.azure_openai import AzureOpenAIEmbedding
     from llama_index.llms.azure_openai import AzureOpenAI as LIAzureOpenAI
@@ -87,7 +97,27 @@ def _build_tag_skill(cfg: BotConfig):
     azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "")
     azure_api_key = os.getenv("AZURE_OPENAI_API_KEY", "")
     azure_api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
-    embed_deployment = os.getenv("AZURE_OPENAI_EMBED_DEPLOYMENT", "text-embedding-3-small")
+
+    sql_gen_deployment = (
+        os.getenv("AZURE_OPENAI_SQL_GEN_DEPLOYMENT")
+        or spec.sql_gen_deployment
+        or cfg.llm_deployment
+    )
+    summarizer_deployment = (
+        os.getenv("AZURE_OPENAI_SUMMARIZER_DEPLOYMENT")
+        or spec.summarizer_deployment
+        or cfg.llm_deployment
+    )
+    embed_deployment = (
+        os.getenv("AZURE_OPENAI_EMBED_DEPLOYMENT")
+        or spec.embed_deployment
+        or "text-embedding-3-small"
+    )
+
+    # Reasoning models reject custom temperature. We resolve per-stage —
+    # the SQL gen and summarizer can in principle use different deployments.
+    sql_gen_is_reasoning = is_reasoning_deployment(sql_gen_deployment)
+    summarizer_is_reasoning = is_reasoning_deployment(summarizer_deployment)
 
     semantic_layer = SemanticLayer.from_yaml(spec.semantic_layer_path)
 
@@ -99,16 +129,18 @@ def _build_tag_skill(cfg: BotConfig):
         api_version=azure_api_version,
     )
 
-    # LlamaIndex's own AzureOpenAI wrapper, used by NLSQLRetriever for SQL gen.
-    li_sql_gen_llm = LIAzureOpenAI(
-        engine=spec.sql_gen_deployment,
-        model=spec.sql_gen_deployment,
-        azure_endpoint=azure_endpoint,
-        api_key=azure_api_key,
-        api_version=azure_api_version,
-        temperature=spec.sql_gen_temperature,
-        max_tokens=spec.sql_gen_max_tokens,
-    )
+    # LlamaIndex AzureOpenAI for NLSQLRetriever's SQL generation.
+    sql_gen_kwargs: dict = {
+        "engine": sql_gen_deployment,
+        "model": sql_gen_deployment,
+        "azure_endpoint": azure_endpoint,
+        "api_key": azure_api_key,
+        "api_version": azure_api_version,
+        "max_tokens": spec.sql_gen_max_tokens,
+    }
+    if not sql_gen_is_reasoning:
+        sql_gen_kwargs["temperature"] = spec.sql_gen_temperature
+    li_sql_gen_llm = LIAzureOpenAI(**sql_gen_kwargs)
 
     index = build_tag_index(
         semantic_layer,
@@ -117,13 +149,16 @@ def _build_tag_skill(cfg: BotConfig):
         schema_top_k=spec.schema_top_k,
     )
 
+    # LangChain AzureChatOpenAI for the prose summarizer.
     summarizer_llm = make_summarizer(
         azure_endpoint=azure_endpoint,
         azure_api_key=azure_api_key,
         azure_api_version=azure_api_version,
-        deployment=spec.summarizer_deployment,
+        deployment=summarizer_deployment,
         max_tokens=spec.summarizer_max_tokens,
-        temperature=spec.summarizer_temperature,
+        # None signals "skip temperature" in make_summarizer; the wrapper
+        # below omits the kwarg when the deployment is reasoning-class.
+        temperature=None if summarizer_is_reasoning else spec.summarizer_temperature,
     )
 
     pipeline = TagPipeline(
@@ -131,10 +166,10 @@ def _build_tag_skill(cfg: BotConfig):
         summarizer_llm=summarizer_llm,
         config=TagConfig(
             semantic_layer_path=spec.semantic_layer_path,
-            sql_gen_deployment=spec.sql_gen_deployment,
+            sql_gen_deployment=sql_gen_deployment,
             sql_gen_temperature=spec.sql_gen_temperature,
             sql_gen_max_tokens=spec.sql_gen_max_tokens,
-            summarizer_deployment=spec.summarizer_deployment,
+            summarizer_deployment=summarizer_deployment,
             summarizer_temperature=spec.summarizer_temperature,
             summarizer_max_tokens=spec.summarizer_max_tokens,
             schema_top_k=spec.schema_top_k,

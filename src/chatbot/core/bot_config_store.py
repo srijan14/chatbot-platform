@@ -40,18 +40,20 @@ class MCPServerRef:
 class TagConfigSpec:
     """Per-bot config for the TAG skill (parsed; the engine reads it).
 
-    Mirrors `TagConfig` in engines.tag_engine.pipeline but lives here so
-    BotConfig is self-contained and the engine has zero compile-time
-    dependency on chatbot core. The router copies fields across at mount
-    time.
+    Deployment fields default to None — meaning "use the bot's main
+    `llm.deployment` for this stage". The router applies that fallback
+    at skill-build time. This lets a bot reuse a single Azure deployment
+    for everything (common when only one model is provisioned) while
+    still allowing per-stage overrides for cost optimisation.
     """
     semantic_layer_path: str
-    sql_gen_deployment: str = "gpt-4o"
+    sql_gen_deployment: str | None = None       # falls back to bot.llm_deployment
     sql_gen_temperature: float = 0.0
     sql_gen_max_tokens: int = 512
-    summarizer_deployment: str = "gpt-4o-mini"
+    summarizer_deployment: str | None = None    # falls back to bot.llm_deployment
     summarizer_temperature: float = 0.2
     summarizer_max_tokens: int = 400
+    embed_deployment: str | None = None         # falls back to env / sensible default
     schema_top_k: int = 4
     row_limit: int = 100
     repair_max_attempts: int = 3
@@ -152,12 +154,13 @@ class BotConfig:
             executor = tag_raw.get("executor") or {}
             tag_spec = TagConfigSpec(
                 semantic_layer_path=tag_raw["semantic_layer_path"],
-                sql_gen_deployment=sql_gen.get("deployment", "gpt-4o"),
+                sql_gen_deployment=sql_gen.get("deployment"),
                 sql_gen_temperature=float(sql_gen.get("temperature", 0.0)),
                 sql_gen_max_tokens=int(sql_gen.get("max_tokens", 512)),
-                summarizer_deployment=summ.get("deployment", "gpt-4o-mini"),
+                summarizer_deployment=summ.get("deployment"),
                 summarizer_temperature=float(summ.get("temperature", 0.2)),
                 summarizer_max_tokens=int(summ.get("max_tokens", 400)),
+                embed_deployment=tag_raw.get("embed_deployment"),
                 schema_top_k=int(tag_raw.get("schema_top_k", 4)),
                 row_limit=int(executor.get("row_limit", 100)),
                 repair_max_attempts=int(tag_raw.get("repair_max_attempts", 3)),
