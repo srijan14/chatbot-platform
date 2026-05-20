@@ -170,6 +170,14 @@ def _build_tag_skill(cfg: BotConfig):
     Settings.llm = li_sql_gen_llm
     if embed_model is not None:
         Settings.embed_model = embed_model
+    else:
+        # Even in tables=[...] mode, parts of NLSQLRetriever/SQLDatabase init
+        # touch Settings.embed_model and trigger LlamaIndex's lazy OpenAI
+        # default, which 500s without OPENAI_API_KEY. Plug a no-network
+        # MockEmbedding so the global is satisfied without phoning OpenAI.
+        # Real embeddings aren't used in this code path (no ObjectIndex).
+        from llama_index.core.embeddings.mock_embed_model import MockEmbedding
+        Settings.embed_model = MockEmbedding(embed_dim=8)
 
     index = build_tag_index(
         semantic_layer,
