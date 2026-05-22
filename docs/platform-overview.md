@@ -1,58 +1,32 @@
-# Chatbot Platform — Architecture & Strategy
+# Chatbot Platform — Overview
 
-> Audience: Tech leadership, architecture review board, product leadership.
-> Purpose: Explain what the platform does, why it exists, what it costs to operate, and how it extends.
-> Status: v1.0 live with two bots (Support / BI). Web Scrape capability on the roadmap.
+## What this is
 
----
+A single platform that hosts many chatbots. Each chatbot is a small configuration file plus a chosen set of capabilities. They all share one engine — the same conversation logic, the same safety rules, the same memory, the same monitoring.
 
-## 1. Executive Summary
+Two bots run on the platform today:
 
-We have built a **single platform that hosts many specialised chatbots**. Each bot is a configuration choice (a YAML file plus a small set of capabilities), not a separate codebase. Today the platform runs in production with two bots; the architecture supports four bot archetypes (Support, BI, Website, Transactional) on the same engine.
+- **Telecom Support** — answers customer questions and performs guarded actions like changing a plan or paying a bill.
+- **BI Assistant** — answers natural-language business questions ("revenue by segment last month") by writing safe SQL against an analytics database and replying with a short prose summary plus a data table.
 
-**Why this matters.** Conversational interfaces are now the expected front door for customer support, internal analytics, transactional self-service, and website search. Building each as a one-off project means duplicating authentication, conversation memory, safety guardrails, cost controls, and observability for every team that wants a chatbot. This platform makes those concerns common infrastructure. New bots ship in **days**, not quarters.
-
-**What we ask of leadership in this doc.**
-- Confirm the platform direction and the four target bot archetypes.
-- Approve the next-quarter investment in RAG and Web Scrape capabilities (already designed; not yet built).
-- Sign off on the cost-governance model (per-tenant token caps, deployment routing).
+The same platform is designed to host other kinds of bots — a documentation Q&A bot, a website chatbot, others — without rewriting the engine. Those are described later in this document.
 
 ---
 
-## 2. Business Context
+## The idea
 
-### 2.1 The problem we solve
+Most chatbots end up being the same software repeated: a way to take a user message, look up who the user is, decide what to do, call one or more services, and reply. The platform extracts that shared scaffolding into a single product so the team building a new chatbot only has to think about the bot's *purpose* and *capabilities*, not its plumbing.
 
-| Today (without the platform) | With the platform |
-|---|---|
-| Each business team building a chatbot reinvents the same plumbing — session management, prompt engineering, tool invocation, safety filters, cost tracking. | One platform team owns the plumbing. Business teams own only their bot's YAML config and domain knowledge. |
-| LLM costs are unpredictable. No per-tenant accountability. | Per-tenant daily token cap is enforced before every model call. Costs are queryable per bot, per customer, per day. |
-| Each chatbot has its own observability story — or none. | Every turn produces a structured log with trace ID, token usage, latency, tools called. One dashboard covers every bot. |
-| Onboarding a new use case requires an engineering project. | Onboarding a new bot is a config + skill enablement. |
+A new bot, in this model, is mostly:
 
-### 2.2 Bot archetypes — the four ways the platform creates value
+1. A short YAML file describing the bot's persona (the system prompt it uses) and which capabilities it should have access to.
+2. The configuration for those capabilities — which database, which API server, which document store, etc.
 
-The platform supports **four reusable bot archetypes**. Each corresponds to a category of business problem and uses a different combination of skills.
-
-| # | Bot Archetype | Business Problem | Skills Used | Example Use Case | Status |
-|---|---|---|---|---|---|
-| 1 | **Support Bot** | Customers asking "how do I…" / "what does my product do" — answers come from a corpus of documentation that changes weekly. | RAG | First-line product support; deflects ~40% of help-desk tickets. | Roadmap (Q-next) |
-| 2 | **BI Assistant** | Business users ("show me revenue by segment last month") who don't write SQL but need answers from the warehouse. | TAG (NL→SQL) | Marketing, Finance, Ops self-service analytics. | **Live** |
-| 3 | **Website Chatbot** | Public-website visitors asking about products / policies / pricing. Content is whatever's on the corporate site. | RAG + Web Scrape | Pre-sales, lead capture, FAQ deflection. | Roadmap (Q-next) |
-| 4 | **Transactional Bot** | Customers performing a guarded action — change plan, reset PIN, pay a bill, file a complaint. Each action calls a real internal API. | Tool Call | Telecom customer self-service (live). Generalises to any vertical with backend APIs. | **Live** |
-
-These four archetypes cover the large majority of internal and customer-facing chatbot use cases. A fifth bot type — multi-skill bots that combine, say, RAG + Tool Call ("look up the policy, then process the refund") — is supported by the architecture and is a natural extension once the foundational four are live.
-
-### 2.3 Two bots in production today
-
-| Bot | What it does | Business owner |
-|---|---|---|
-| **Telecom Support** | Customer-care + self-service for telecom subscribers. Answers questions about plans, bills, network status; performs guarded actions like plan changes with two-step confirmation. | Customer Operations |
-| **BI Assistant** | Translates plain-English business questions into safe read-only SQL against the analytics warehouse. Returns a prose answer plus a markdown data table. | Data / Analytics |
+Everything else — conversation memory, prompt assembly, model calls, tool dispatching, safety checks, cost tracking, logging — comes from the platform.
 
 ---
 
-## 3. Architecture Overview
+## The big picture
 
 ```
    ┌──────────────────────────────────────────────────────────┐
@@ -61,305 +35,177 @@ These four archetypes cover the large majority of internal and customer-facing c
                                 ▼
                 ┌───────────────────────────────┐
                 │  API Gateway                   │
-                │  Auth · Rate Limit · Tenant    │
-                │  Routing · SSE / WebSocket     │
+                │  Auth · Rate Limit · Routing   │
                 └───────────────┬───────────────┘
                                 ▼
                 ┌───────────────────────────────┐
                 │  Bot Router                    │
-                │  Reads bot config →            │
-                │  activates the right modules   │
+                │  Picks the bot, activates the  │
+                │  capabilities listed in config │
                 └───────────────┬───────────────┘
                                 ▼
    ┌──────────────────────────────────────────────────────────┐
-   │  CORE ENGINE                                              │
-   │  Conversation Manager · LLM Orchestrator · Response       │
-   │  Formatter · Intent Classifier · Persona Store ·          │
-   │  Guardrails (PII / Safety / Limits) · Bot Config Store    │
+   │  Core Engine                                              │
+   │   • Conversation Manager — session, history, memory      │
+   │   • LLM Orchestrator — prompt build, model call, parse   │
+   │   • Response Formatter                                    │
+   │   • Persona Store, Guardrails, Bot Config Store          │
    │                                                           │
-   │  Pluggable skill slots, activated by bot config:          │
-   │    RAG Skill │ TAG / SQL Skill │ Tool Call │ Web Scrape   │
+   │  Pluggable skills (turned on per bot):                    │
+   │    RAG  ·  TAG / SQL  ·  Tool Call  ·  Web Scrape         │
    └──┬───────────────┬───────────────┬───────────────┬───────┘
       ▼               ▼               ▼               ▼
   ┌────────┐    ┌────────┐    ┌──────────┐    ┌────────────┐
   │ RAG    │    │ TAG    │    │ Tool     │    │ Web        │
   │ Engine │    │ Engine │    │ Engine   │    │ Scraper    │
-  └───┬────┘    └───┬────┘    └────┬─────┘    └─────┬──────┘
-      │             │              │                │
-      └─────────────┴──── External Integrations ────┴────────┐
-                        Internal APIs (Pay / Account / KYC)   │
-                        Databases (Analytics RO / Warehouse)  │
-                        Document Sources (S3 / Confluence)    │
-                                                              ▼
+  └────────┘    └────────┘    └──────────┘    └────────────┘
+       │             │              │                │
+       │             ▼              ▼                │
+       │   ┌──────────────────────────────┐          │
+       │   │ Databases, internal APIs,    │          │
+       └──→│ document stores, websites…   │←─────────┘
+           └──────────────────────────────┘
+
    ┌──────────────────────────────────────────────────────────┐
-   │  OBSERVABILITY                                            │
-   │  Traces · Cost / Query · Latency P50/P99 · User Feedback  │
-   │  · Eval / Accuracy · Conversation Logs                    │
+   │  Observability: traces, latency, cost, conversation logs  │
    └──────────────────────────────────────────────────────────┘
 ```
 
-### 3.1 The four-layer mental model
+Each layer only talks to the one below it. That's what lets us add a new bot — or a new capability — without disturbing the rest.
 
-| Layer | Responsibility | What it isolates |
-|---|---|---|
-| **Channels** | How a user reaches the bot. Web widget, mobile, WhatsApp, REST API. | UI / channel-specific concerns. |
-| **API Gateway** | Authentication, rate limiting, tenant routing, streaming protocol. | Cross-cutting platform policies. Bots never deal with auth directly. |
-| **Bot Router + Core Engine** | The brain. Picks the right bot for the request, builds the prompt, calls the LLM, dispatches tools, formats the response. | The decision of *which bot* from *what the bot does*. |
-| **Skill Engines** | Capability implementations: retrieval over documents, NL→SQL, calling internal APIs, scraping web content. | Domain complexity. The engine layer is where vendor frameworks (LlamaIndex, MCP, sqlglot) live. |
+---
 
-### 3.2 Why a single platform instead of N bot projects
+## The moving parts
 
-| Lever | Value |
+### Channels
+
+Where a user actually reaches the bot. The same backend serves a web chat widget, a REST API, a mobile app, WhatsApp, or an embedded iframe on a corporate site. The bot doesn't know or care which channel a message came from.
+
+### API Gateway
+
+The front door. It authenticates the user, rate-limits abusive callers, routes to the right backend, and handles streaming responses where needed. Bots inherit these protections; they don't implement them.
+
+### Bot Router
+
+Reads the bot's configuration file and decides which capabilities to switch on for this conversation. If a bot's config lists `tag` and `clarification`, the router mounts those two skills and ignores the rest.
+
+### Core Engine
+
+The brain. It handles five recurring jobs that every bot needs:
+
+| Component | What it does |
 |---|---|
-| **Time-to-market** | New bot ≈ 1 YAML file + skill enablement. Days, not quarters. |
-| **Cost control** | Per-tenant token caps and per-stage deployment routing live in one place. Finance gets one bill, one report. |
-| **Safety** | PII redaction, prompt-injection defences, and SQL safety are platform features. Every new bot inherits them on day one. |
-| **Observability** | One trace ID per turn, one log shape, one dashboard. Incident response is consistent across bots. |
-| **Hiring leverage** | One small platform team can support many business teams. Business teams own their bot's content, not its plumbing. |
+| **Conversation Manager** | Keeps track of the conversation: session ID, history of messages, the user's pending state (for example, "still waiting for a clarification answer"). |
+| **LLM Orchestrator** | Assembles the prompt from the bot's persona + recent history + any tool definitions, calls the language model, and parses the result. Re-runs the loop when the model wants to call a tool. |
+| **Response Formatter** | Shapes the engine's output into the final chat response the channel expects. |
+| **Persona Store** | Each bot's system prompt and per-skill instructions. |
+| **Guardrails** | PII redaction, prompt-injection defences, input-size limits. |
+| **Bot Config Store** | The YAML/JSON file that defines every bot — its persona, its skills, its limits. |
 
----
+### Skills (the pluggable parts)
 
-## 4. Core Capabilities (The Skills)
+A skill is one unit of capability. Bots opt in to skills via config. Today the platform has four skill slots:
 
-Skills are the unit of *what a bot can do*. Each is independently developed, tested, and reused. A bot's YAML enables the skills it needs.
-
-### 4.1 RAG Skill — "Answer from documents" (Roadmap)
-
-**Business use.** Support bot and website chatbot. Any time the answer lives in unstructured text (PDFs, Confluence, knowledge-base articles, marketing pages).
-
-**How it works.** Documents are ingested, chunked, embedded into a per-tenant vector store. At query time the question is embedded, the most relevant chunks are retrieved, optionally re-ranked, and inserted into the LLM prompt as context.
-
-**Tenant isolation.** Vector stores are partitioned per tenant. One support bot's documents cannot leak into another's responses. This is the basis of the multi-tenant deployment model.
-
-**Refresh story.** Documents are re-ingested on a schedule (daily for marketing content, on-write for product KB). Web Scrape feeds directly into this pipeline for the website chatbot.
-
-### 4.2 TAG / SQL Skill — "Answer from the data warehouse" (Live)
-
-**Business use.** BI Assistant. Marketing, Finance, Ops asking ad-hoc questions of the analytics warehouse without writing SQL.
-
-**How it works (five guarded stages):**
-
-1. **Schema retrieval.** The bot has a *semantic layer* — a curated description of tables, metrics, dimensions. For large schemas the platform retrieves only the relevant tables per question (schema RAG).
-2. **NL → SQL generation.** The LLM produces a single SQL `SELECT` against the retrieved tables.
-3. **Safety validation.** The SQL is parsed into an abstract syntax tree (sqlglot) and rejected if it isn't a single read-only `SELECT`. A `LIMIT` is injected automatically.
-4. **Read-only execution.** The query runs against a *read-only* database connection. Even if validation has a bug, the connection itself cannot mutate.
-5. **Summarisation.** A dedicated, cheaper LLM turns the SQL result into a 2-3 sentence prose answer with a markdown data table beneath.
-
-**Safety as a platform feature.** No business team has to remember to lock down their warehouse. The platform enforces read-only, statement timeouts, and result-size caps for every TAG bot uniformly.
-
-**Self-correction.** If the LLM produces SQL that fails validation or execution, the error is fed back to the model and it tries again. Up to 3 attempts before a graceful surrender. This keeps end-to-end success rate high even when the model misunderstands the schema.
-
-### 4.3 Tool Call Skill — "Perform an action via internal APIs" (Live)
-
-**Business use.** Transactional bot. Any guarded action that hits a real backend system — change a customer's plan, reset a PIN, pay a bill, file a complaint, create a support ticket.
-
-**How it works.** Internal services expose their tools through the **Model Context Protocol (MCP)** — an open standard for LLM-callable tools. The platform's Tool Call skill discovers and invokes them. Each service is a separate process and can be written in any language.
-
-**Why MCP matters strategically.** It decouples the bot from the service implementation. Adding a Sales service tomorrow doesn't require changing the bot — only registering the new MCP server. Replacing the LLM vendor doesn't require rewriting the services.
-
-**Two-step confirmation pattern.** Mutating actions (plan change, payment) follow a *preview-then-confirm* protocol enforced by the tool's contract. The bot must always show a preview to the user and get explicit confirmation before committing. This is a platform-level safety net for high-stakes operations.
-
-### 4.4 Web Scrape Skill — "Use website content as a knowledge source" (Roadmap)
-
-**Business use.** Website chatbot. Public-website FAQ deflection, pricing questions, product information. Whenever the answer is *on the corporate site* but you don't want to maintain a parallel KB.
-
-**How it works.** A crawler discovers pages from a sitemap; content is extracted from HTML, cleaned (boilerplate stripped), and fed into the RAG ingestion pipeline. A scheduler triggers re-crawls on configurable cadence.
-
-**Why this matters.** It eliminates the duplicate-content problem (the website team owns one source of truth, not two). It also handles content churn — pages change, the chatbot's answers stay current automatically.
-
----
-
-## 5. Cross-Cutting Platform Concerns
-
-### 5.1 Security & Compliance
-
-| Concern | How the platform handles it |
+| Skill | What it lets a bot do |
 |---|---|
-| **Authentication** | API Gateway. Every request carries a tenant + user identity. Bots receive the identity but cannot bypass authentication. |
-| **PII redaction** | Guardrails module redacts known PII patterns from logs and from prompt context before they reach the LLM. |
-| **Prompt injection** | All tool / document content treated as untrusted. Wrapped in clear delimiters. Tool authorisation is enforced server-side, not by the LLM — the LLM is never the security boundary. |
-| **SQL injection / mutation** | Three layers of defence (parse → validate → read-only connection). See §4.2. |
-| **Data residency / tenant isolation** | Per-tenant vector stores. Per-tenant token tally. Each tenant's data never enters another tenant's prompt. |
-| **Audit** | Every turn produces a TurnLog with trace ID, tools called, tokens used. Conversation logs (full message history) retained per the tenant's retention policy. |
+| **RAG** | Answer questions from a set of documents — manuals, knowledge base articles, PDFs, internal wikis. |
+| **TAG / SQL** | Translate a natural-language question into safe SQL, run it against a database, and summarise the result. |
+| **Tool Call** | Call internal services to actually *do* things — change a plan, reset a PIN, pay a bill, create a ticket. |
+| **Web Scrape** | Pull content from public websites and turn it into knowledge the bot can use. Feeds into RAG. |
 
-### 5.2 Cost Governance
+**Live today**: Tool Call (powering Telecom Support) and TAG (powering BI Assistant). RAG and Web Scrape are designed in the architecture and not yet built.
 
-LLM costs scale unpredictably with usage. The platform makes them predictable.
+### Engines
 
-| Lever | Where it lives | What it controls |
-|---|---|---|
-| **Per-tenant daily token cap** | Budget Guard middleware (runs before every LLM call) | Hard cap. Over budget → polite refusal, no LLM call. |
-| **Per-stage deployment routing** | Bot config + env overrides | A bot can use a cheap model for SQL generation, a stronger one for the user-facing answer. Saves 60-80% on TAG bots in our measurements. |
-| **Reasoning-model awareness** | Orchestrator + TAG engine | Automatically uses `max_completion_tokens` and omits `temperature` for o-series / gpt-5+ deployments. Avoids wasted retries from API rejections. |
-| **Prompt caching** | Azure OpenAI automatic + LangChain stable-prefix discipline | System prompts stay structurally identical across turns → automatic prompt-cache hits → ~50% input token reduction on conversational sessions. |
-| **Cost report** | Observability layer | Per-bot, per-tenant, per-day. Joins with Finance billing data downstream. |
+Behind each skill is an engine — the heavier-lifting part. The skill is a small wrapper that knows how to expose itself to the bot's brain; the engine is where the actual work happens.
 
-### 5.3 Observability
-
-Every turn writes a structured TurnLog record:
-
-| Field | Used for |
+| Engine | Pieces |
 |---|---|
-| `trace_id` (unique per turn) | Cross-system correlation; threads through every log line and downstream service call |
-| `bot_id`, `tenant_id`, `customer_id` | Per-bot, per-tenant slicing |
-| `iterations`, `tool_calls` | How many LLM calls and tool dispatches this turn took |
-| `prompt_tokens`, `completion_tokens`, `cached_tokens` | Cost and prompt-cache effectiveness |
-| `latency_ms` | P50 / P95 / P99 SLO tracking |
-| `awaiting_clarification` | UX-flow analytics ("how often does the bot have to ask follow-ups?") |
+| **RAG Engine** | Document ingestion → chunking + embedding → vector store (per tenant) → retrieve + rerank at query time. |
+| **TAG Engine** | Schema + semantic layer → NL→SQL generator → read-only executor → summariser + (later) charts. |
+| **Tool Engine** | Registry of available tools → auth & scope management → request building → response parsing. |
+| **Web Scraper** | URL / sitemap crawler → HTML to clean text → feeds into RAG → scheduler for refresh. |
 
-In addition, every stage emits structured log lines (prefix-tagged: `[orch]`, `[tag]`, `[rag]`, `[clar]`) so a single turn can be reconstructed from logs alone.
+### Observability
 
-### 5.4 Evaluation & Quality
-
-Quality of an LLM-driven system is a continuous concern, not a launch milestone.
-
-| Mechanism | What it does | Status |
-|---|---|---|
-| **Per-skill regression suites** | Gold question → expected SQL / expected tool call / expected response shape. Run pre-deploy. | In progress |
-| **User feedback signals** | Thumbs-up / thumbs-down captured per turn, joined with trace ID. | Roadmap |
-| **Production sample replay** | Replay last week's turns against a candidate model to compare. | Roadmap |
-| **Cost & latency budgets per bot** | Each bot declares a budget; SRE alerts on regressions. | In progress |
+Every conversation turn — one user message and the bot's reply — produces a structured log entry: a unique trace ID, the bot involved, latency, tokens used, which tools fired, whether a clarification was triggered. This is what powers dashboards, cost reports, and incident debugging.
 
 ---
 
-## 6. Operating Model
+## How a conversation flows
 
-### 6.1 How a new bot gets shipped
+A simple example. User asks the BI Assistant: *"How many completed orders per country in the last 90 days?"*
 
-| Step | Owner | Effort |
-|---|---|---|
-| 1. Identify the use case and archetype (Support / BI / Website / Transactional / mixed) | Business team | — |
-| 2. Author a bot YAML: persona, enabled skills, per-skill config | Business team (with platform team for first bot) | 1–2 days |
-| 3. For RAG: hand the platform team the document sources | Business team | 1 day |
-| 4. For TAG: define the semantic layer (table descriptions, metrics, dimensions) | Business team + Data team | 2–3 days |
-| 5. For Tool Call: register the internal service as an MCP server (one-time, per service) | Owning service team | 3–5 days first time, hours thereafter |
-| 6. Smoke test in staging; tune persona | Business team | 1–2 days |
-| 7. Roll out | Platform team | — |
+1. **Channel → Gateway → Router.** The message hits the gateway, gets authenticated, and is routed to the BI Assistant bot.
+2. **Conversation Manager** loads any earlier messages in this session and the user's identity.
+3. **Orchestrator** builds the prompt: the BI persona, the rules for each enabled skill, the conversation history, and the new question.
+4. **The model decides** the right move is to call the `query_business_data` tool.
+5. **The TAG skill picks up the call** and hands the question to the TAG engine.
+6. **TAG engine**: generates SQL, parses and validates it (rejects anything that isn't a read-only `SELECT`, injects a row limit), runs it against the warehouse in read-only mode, then asks a smaller model to write a short prose summary plus a markdown data table.
+7. **The summary comes back to the orchestrator**, which finishes the conversation turn and returns the reply to the user.
+8. **Observability**: a log line per stage, all tied together by the same trace ID.
 
-**Total: 1–2 weeks for a first bot in a new vertical; days for subsequent bots in the same vertical.**
-
-### 6.2 Who owns what
-
-| Concern | Owner |
-|---|---|
-| Platform code (router, orchestrator, skills, engines) | Platform team |
-| Bot YAML, persona, prompt tuning | Business team |
-| Semantic layer (TAG bots) | Data team in partnership with the business team |
-| MCP server (Tool Call bots) | The service team that owns the API |
-| Document corpus (RAG bots) | The business team / content owners |
-| SLOs (latency, cost, accuracy) per bot | Business team — defined; Platform team — enforced |
-
-### 6.3 Adding new capabilities
-
-The platform has four skill slots today. Adding a fifth is an engineering project (~2 weeks):
-1. Implement the engine (e.g. a Voice Skill that pipes Whisper transcription + TTS).
-2. Implement the Skill class that wraps the engine.
-3. Document the YAML configuration shape.
-4. Add observability hooks.
-
-Every existing bot remains unaffected.
+If the bot can't answer immediately because the question is ambiguous, the **clarification mechanism** kicks in: the bot pauses the conversation, asks the user a follow-up question, and resumes from exactly where it left off when the user replies.
 
 ---
 
-## 7. Technology Choices (Summary)
+## How a new bot is created
 
-A leadership-level view; engineering details live in the architecture appendix.
+The platform is designed for bots to be a config-and-content exercise rather than a code project.
 
-| Decision | Choice | Why |
-|---|---|---|
-| Agent orchestration framework | **LangChain v1 / LangGraph** | Industry-standard tooling for stateful conversational agents. Strong community, active development, first-class support for human-in-the-loop pauses (used for clarification). |
-| LLM provider (today) | **Azure OpenAI** (`o4-mini`) | Enterprise compliance posture; existing org commitment. Architecture allows multi-provider failover later via an LLM gateway pattern. |
-| Tool invocation protocol | **Model Context Protocol (MCP)** | Open standard. Decouples LLM from service implementation. Lets internal teams expose APIs to chatbots without giving up control of their service. |
-| NL → SQL | **LlamaIndex** `NLSQLRetriever` + custom safety layer | Best-in-class for schema-aware SQL generation. We layer sqlglot validation on top because LlamaIndex doesn't enforce read-only semantics defensibly. |
-| SQL safety | **sqlglot AST parser** | Catches mutation attempts that regex would miss (e.g. `INSERT … SELECT`, `CREATE TABLE AS`). Defence-in-depth alongside read-only DB connections. |
-| Conversation state | **LangGraph SQLite checkpointer** (today); Postgres or Redis (production scale) | Today suffices for single-process operation; trivial to swap when we scale horizontally. |
-| Observability | **Structured JSON logs + per-turn audit table** | Vendor-neutral; routes to Splunk / Datadog / Grafana as the org chooses. |
+A team that wants a new bot does roughly this:
 
----
+1. **Pick the bot's purpose** — customer support, internal analytics, FAQ deflection, transactional self-service.
+2. **Decide which skills it needs** — for a documentation bot that's RAG; for an analytics bot that's TAG; for a "do things" bot that's Tool Call.
+3. **Write the YAML config**: the bot's name, its system prompt (its personality + rules), the skills to enable, and per-skill configuration.
+4. **Provide the content or service the skills need**:
+   - For RAG: the document set.
+   - For TAG: a semantic layer describing the warehouse tables.
+   - For Tool Call: a service that exposes the actions over the platform's tool protocol.
+5. **Smoke test** in staging, tune the persona, roll out.
 
-## 8. Scale & Roadmap
-
-### 8.1 Where the platform is today
-
-- Two bots live (Telecom Support, BI Assistant)
-- Single-process deployment (one chatbot service instance per environment)
-- ~1M tokens / tenant / day budget cap (configurable)
-- sqlite-backed conversation state and audit logs
-- All four engine slots designed; two implemented (Tool Call, TAG); two designed (RAG, Web Scrape)
-
-### 8.2 Path to 10,000 tenants
-
-The architecture is shaped for horizontal scale; the change is mostly persistence.
-
-| Component | Today | At scale |
-|---|---|---|
-| Orchestrator | Single process, stateless | Horizontally scaled; multiple instances behind a load balancer |
-| Conversation state | sqlite checkpointer | Postgres or Redis checkpointer (LangGraph supports both natively) |
-| Per-tenant budget store | In-process dict | Redis with midnight-rollover keys |
-| MCP client | Per-request HTTP session | Long-lived pooled sessions per MCP server |
-| Vector store (RAG) | n/a yet | Per-tenant collections in Pinecone / Weaviate / pgvector |
-| LLM | Single Azure OpenAI deployment | LLM gateway (LiteLLM / Portkey) for multi-provider failover and routing |
-
-None of this requires architectural change. It is a configuration / persistence-layer swap.
-
-### 8.3 Quarter-by-quarter outlook (illustrative)
-
-| Quarter | Milestone |
-|---|---|
-| **Now** | Telecom Support + BI Assistant live. Tool Call and TAG engines in production. |
-| **Next** | RAG skill + RAG engine live. First Support bot launched. Web Scrape engine designed. |
-| **Next +1** | Website chatbot live (combines RAG + Web Scrape). Mixed-skill bots (e.g. RAG + Tool Call). |
-| **Next +2** | Multi-provider LLM gateway. Per-tenant cost dashboards GA. Eval harness automated in CI. |
+The platform code does not change. The other bots are unaffected.
 
 ---
 
-## 9. Risks & Mitigations
+## The four bot archetypes
 
-| Risk | Likelihood | Impact | Mitigation |
+Today's two bots are examples of two of these four patterns. The same engine supports the other two with the corresponding skills.
+
+| Pattern | What it looks like | Skill | Examples |
 |---|---|---|---|
-| LLM cost overrun by a single tenant | Medium | High | Per-tenant daily cap enforced by middleware before every call. Hard ceiling, not a soft alert. |
-| Prompt-injection attack via tenant content | Medium | High | Tenant content is delimited and treated as untrusted in prompts. Tool authorisation is server-side, never LLM-decided. |
-| LLM-generated SQL mutating the warehouse | Low | Critical | Three layers of defence (AST parse → reject non-SELECT → read-only DB connection). The DB cannot mutate even if validation has a bug. |
-| Hallucinated answers in BI | Medium | High | Summarizer prompt explicitly forbids inventing numbers; only data from query results is permitted. SQL + result table are surfaced to the user for spot-checking. |
-| Single LLM provider outage | Low | High | Architecture supports gateway-based multi-provider failover; we have not enabled it yet. **Action item: by Q-next +2.** |
-| Tenant data leak across vector stores | Low | Critical | Per-tenant partitioning enforced at the index level, not at the query layer. **To be validated during RAG rollout.** |
-| Conversation memory drift on long sessions | Medium | Medium | Conversation state owned by LangGraph checkpointer; sliding window strategies available. |
-| New skill introduces orchestrator regression | Medium | Medium | All skills bind through one stable adapter. Adapter contract is small and well-tested (60 unit tests today). |
+| **Support / Q&A bot** | "How do I…", "What does my product cover…" — answers from a document corpus that changes over time. | RAG | Help-desk deflection, product onboarding, internal policy lookup. |
+| **BI / analytics bot** | "Show me revenue by segment last month" — answers from the data warehouse. | TAG | Marketing, finance, ops self-service. |
+| **Website bot** | A chat widget on a public site that knows the latest pricing, FAQs, and product pages. | RAG + Web Scrape | Pre-sales, lead capture. |
+| **Transactional bot** | "Change my plan", "Reset my PIN" — actions performed against real internal services. | Tool Call | Customer self-service. |
+
+These aren't rigid categories — a bot can combine skills (a transactional bot that also does Q&A from documentation, for instance). The platform supports the combinations; the bot's config decides.
 
 ---
 
-## 10. What We Need From Leadership
+## Safety, cost, and trust
 
-| Decision needed | Why |
-|---|---|
-| **Endorse the four-archetype strategy** as the platform's product positioning. | Aligns business-team expectations and prevents one-off "snowflake" bot projects. |
-| **Approve next-quarter engineering investment** in the RAG and Web Scrape engines. | Required to ship Support and Website bots. |
-| **Approve the cost-governance model** (per-tenant daily caps, per-stage deployment routing). | Finance and procurement need predictable LLM spend. |
-| **Identify the first three RAG bot use cases** to pilot. | Prioritises ingestion engineering work. |
-| **Confirm the deployment topology** for multi-tenant production (single instance per region vs. shared multi-tenant). | Drives the persistence-layer choice for conversation state. |
+Because the platform sits between users and powerful models / data / APIs, three things are non-negotiable and live in the engine itself — never delegated to the bot's author.
+
+**Safety.** PII patterns are scrubbed from logs. User-supplied content and tool results are clearly delimited in prompts so the model treats them as data, not instructions. For TAG, SQL generated by the model is parsed into a syntax tree and rejected if it isn't a single read-only `SELECT`; the database connection itself is read-only as a second line of defence.
+
+**Cost control.** Every conversation turn updates a per-customer token count. A daily cap is enforced before each model call — over the cap, the bot politely refuses. Different stages of a bot can use different model deployments (a cheap model for SQL writing, a stronger one for the user-facing answer), set per-bot in config.
+
+**Trust.** Every turn writes one structured audit record: trace ID, tokens used, latency, tools called. Conversation history is retained per tenant policy. Failures are visible in logs with the same trace ID that threads through the entire turn.
 
 ---
 
-## Appendix A — Glossary
+## Glossary
 
 | Term | Meaning |
 |---|---|
-| **Bot** | A configuration that combines a persona, a set of enabled skills, and per-skill config. One platform hosts many bots. |
-| **Skill** | A pluggable capability (RAG, TAG, Tool Call, Web Scrape). Bots opt in to the skills they need. |
-| **Engine** | The implementation behind a skill (e.g. the TAG engine implements SQL generation, validation, execution, summarisation). |
-| **Session** | A multi-turn conversation, identified by a session ID. State persists across requests. |
-| **Turn** | One user message and the bot's reply. One row in the audit table per turn. |
-| **Tool** | A single callable function the LLM can invoke (e.g. `change_plan`, `query_business_data`). |
-| **MCP** | Model Context Protocol — an open protocol for exposing tools to LLM agents. |
-| **RAG** | Retrieval-Augmented Generation — answering questions by retrieving relevant document chunks and including them in the LLM prompt. |
-| **TAG** | Text-to-Analytics-Generation — answering questions by generating SQL against a database. |
-| **Semantic layer** | A curated description of warehouse tables, metrics, and dimensions that the TAG engine uses to ground SQL generation. |
-| **Trace ID** | A unique identifier per turn that threads through every log line, enabling end-to-end correlation. |
-
----
-
-## Appendix B — Reference
-
-- Detailed engineering architecture: `docs/architecture.md` (sibling document, file-level depth).
-- Demo deployment: `make install && make bi-seed && make run`.
-- Source: this repository.
+| **Bot** | A configured chatbot — a persona plus a set of enabled skills plus their settings. The platform hosts many. |
+| **Skill** | A pluggable capability — RAG, TAG, Tool Call, Web Scrape. Bots opt in. |
+| **Engine** | The implementation behind a skill. The TAG engine, for example, owns SQL generation, validation, execution, and summarisation. |
+| **Session** | One ongoing conversation, identified by a session ID. Memory persists across messages. |
+| **Turn** | One user message and the bot's reply (with any tool calls in between). One audit record per turn. |
+| **Trace ID** | A unique identifier per turn that threads through every log line for that turn. Lets you reconstruct what happened from logs alone. |
+| **Persona** | The system prompt and rules that give a bot its identity and behaviour. |
+| **Semantic layer** | A short, human-written description of the warehouse tables and metrics a TAG bot can query. Helps the model write better SQL. |
+| **Clarification** | The mechanism a bot uses to pause and ask the user for missing information, then resume the same conversation when the user replies. |
+| **Tool** | A function the model can call — get a customer profile, change a plan, query the warehouse. The bot has a list of tools its skills expose. |
