@@ -134,18 +134,20 @@ Every conversation turn — one user message and the bot's reply — produces a 
 
 ## How a conversation flows
 
-A simple example. User asks the BI Assistant: *"How many completed orders per country in the last 90 days?"*
+A simple example. A telecom customer asks the Telecom Support bot: *"What plan am I on right now?"*
 
-1. **Channel → Gateway → Router.** The message hits the gateway, gets authenticated, and is routed to the BI Assistant bot.
-2. **Conversation Manager** loads any earlier messages in this session and the user's identity.
-3. **Orchestrator** builds the prompt: the BI persona, the rules for each enabled skill, the conversation history, and the new question.
-4. **The model decides** the right move is to call the `query_business_data` tool.
-5. **The TAG skill picks up the call** and hands the question to the TAG engine.
-6. **TAG engine**: generates SQL, parses and validates it (rejects anything that isn't a read-only `SELECT`, injects a row limit), runs it against the warehouse in read-only mode, then asks a smaller model to write a short prose summary plus a markdown data table.
-7. **The summary comes back to the orchestrator**, which finishes the conversation turn and returns the reply to the user.
-8. **Observability**: a log line per stage, all tied together by the same trace ID.
+1. **Channel → Gateway → Router.** The message hits the gateway, gets authenticated, and is routed to the Telecom Support bot.
+2. **Conversation Manager** loads any earlier messages in this session and the user's identity (say `CUST001`).
+3. **Orchestrator** builds the prompt: the Telecom persona, the rules for each enabled skill, the conversation history, the new question, and a line telling the model the authenticated customer ID so it doesn't have to ask.
+4. **The model decides** the right move is to call the `get_current_plan` tool with `customer_id="CUST001"`.
+5. **The Tool Call skill picks up the call** and hands it to the Tool Engine.
+6. **Tool Engine**: looks up the tool in its registry, applies the bot's auth/scope rules, makes the call to the underlying internal service (the Telecom API in this case) over the platform's tool protocol, and parses the response.
+7. **The result comes back to the orchestrator** — the customer's current plan, billing date, monthly cost. The model writes a natural reply (*"You're on the PRO_599 plan, ₹599/month, renewing on the 15th."*) and the turn finishes.
+8. **Observability**: a log line per stage, all tied together by the same trace ID — `[chat]` for the gateway, `[orch]` for the orchestrator, `[mcp]` for the tool call, `[tool_engine]` for the request/response.
 
-If the bot can't answer immediately because the question is ambiguous, the **clarification mechanism** kicks in: the bot pauses the conversation, asks the user a follow-up question, and resumes from exactly where it left off when the user replies.
+If the user had instead said something ambiguous — *"Change my plan"* — without naming which plan, the **clarification mechanism** kicks in: the bot pauses the conversation, asks the user a follow-up question (*"Which plan would you like to switch to?"*) with suggested replies, and resumes from exactly where it left off when the user replies. This works the same way for every bot on the platform, regardless of which skills it has enabled.
+
+For mutating actions like *"Change my plan to PRO_599"* the platform's **two-step confirm** pattern fires automatically: the bot first calls the tool with `confirm=false`, shows the user a preview (proration cost, billing date impact), waits for explicit confirmation, then calls again with `confirm=true` to commit.
 
 ---
 
