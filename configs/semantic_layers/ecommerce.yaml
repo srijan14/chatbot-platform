@@ -1,0 +1,100 @@
+# Semantic layer for the e-commerce BI warehouse.
+#
+# Drives two things:
+#   1. The `list_business_metrics` tool result (what's askable, in plain English)
+#   2. LlamaIndex's ObjectIndex — each table's `description` is embedded so the
+#      retriever can pick the right tables for a given user question.
+#
+# Adding a new table here is the only step needed to expose it to the bot.
+
+database:
+  path: data/bi_warehouse.db        # read-only handle opened by the engine
+  dialect: sqlite
+
+# Used by the list_business_metrics tool. Short, business-readable.
+metrics:
+  - name: gross_revenue
+    description: Sum of completed order totals.
+  - name: net_revenue
+    description: Gross revenue minus refunds.
+  - name: gross_margin
+    description: Gross revenue minus product cost × quantity.
+  - name: aov
+    description: Average order value (gross_revenue / order_count).
+  - name: order_count
+    description: Number of completed orders.
+  - name: refund_rate
+    description: Refunded orders / total orders.
+  - name: campaign_roas
+    description: Attributed revenue / campaign spend.
+
+dimensions:
+  - name: customer_segment
+    description: One of {free, premium, enterprise, trial}.
+  - name: country
+    description: ISO-2 code; one of {IN, US, UK}.
+  - name: product_category
+    description: One of {electronics, apparel, home, books}.
+  - name: marketing_channel
+    description: One of {search, social, email, display}.
+  - name: time_grain
+    description: day / week / month / quarter / ytd / last_30_days / last_7_days.
+
+# Each table description is what gets embedded for retrieval. Keep it
+# specific to that table's role + the columns the model needs to know about.
+tables:
+  - name: customers
+    description: >
+      One row per registered customer. Use to filter or group by customer
+      attributes (signup date, country, segment). Columns: id (PK),
+      signup_date (date), country (ISO-2), segment (free/premium/enterprise/trial).
+  - name: products
+    description: >
+      Product catalogue. Use to filter or group by product category, or to
+      compute margin via (price - cost) × quantity. Columns: id (PK), name,
+      category (electronics/apparel/home/books), price, cost.
+  - name: orders
+    description: >
+      One row per order. The primary fact table for revenue questions.
+      Filter by status='completed' for clean revenue calculations.
+      Columns: id (PK), customer_id (FK customers.id), order_date (datetime),
+      status (completed/refunded/cancelled), total.
+  - name: order_items
+    description: >
+      Line items inside each order. Join to products for category/margin
+      analysis. Columns: id, order_id (FK orders.id), product_id (FK
+      products.id), quantity, unit_price.
+  - name: marketing_campaigns
+    description: >
+      Marketing spend by campaign. Columns: id (PK), name, channel
+      (search/social/email/display), start_date, end_date, spend.
+  - name: campaign_attributions
+    description: >
+      Many-to-many between orders and campaigns; carries attributed revenue.
+      Use for ROAS / channel-mix questions. Columns: order_id (FK orders.id),
+      campaign_id (FK marketing_campaigns.id), attributed_revenue.
+
+# A handful of example NL → SQL pairs the SQL generator can use as few-shot
+# context. Keep simple and idiomatic.
+few_shot_examples:
+  - question: What's our top product by revenue in the last 30 days?
+    sql: |
+      SELECT p.id, p.name, SUM(oi.quantity * oi.unit_price) AS revenue
+      FROM order_items oi
+      JOIN orders o ON o.id = oi.order_id
+      JOIN products p ON p.id = oi.product_id
+      WHERE o.status = 'completed'
+        AND o.order_date >= date('now', '-30 days')
+      GROUP BY p.id, p.name
+      ORDER BY revenue DESC
+      LIMIT 1
+  - question: Compare premium vs free segment revenue last month.
+    sql: |
+      SELECT c.segment, SUM(o.total) AS revenue
+      FROM orders o
+      JOIN customers c ON c.id = o.customer_id
+      WHERE o.status = 'completed'
+        AND o.order_date >= date('now', 'start of month', '-1 month')
+        AND o.order_date <  date('now', 'start of month')
+        AND c.segment IN ('premium', 'free')
+      GROUP BY c.segment

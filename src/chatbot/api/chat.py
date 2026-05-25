@@ -1,8 +1,6 @@
 """POST /chat handler — thin glue between HTTP and the orchestrator."""
-import json
-from typing import Any
-
 from fastapi import APIRouter, HTTPException, Request
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 from src.chatbot.api.schemas import (
     ChatRequest,
@@ -21,34 +19,31 @@ router = APIRouter()
 _log = get_logger("chat")
 
 
-def _to_visible_messages(history: list[dict[str, Any]]) -> list[HistoryMessage]:
-    """Filter a raw OpenAI-shape history down to user/assistant chat bubbles.
+def _messages_to_visible(messages: list[BaseMessage]) -> list[HistoryMessage]:
+    """Filter LangChain messages down to user/assistant chat bubbles.
 
     Rules:
-      - role="user" with non-empty content → keep as user bubble
-      - role="assistant" with non-empty content → keep as assistant bubble
-      - role="assistant" with content=None but tool_calls[ask_clarification]
-        → render the question as an assistant bubble (the platform's clarify
-        short-circuit stores the question only inside the tool_call args)
-      - role="tool" and tool-call-only assistant turns → skipped (internal)
+      - HumanMessage → user bubble
+      - AIMessage with non-empty string content → assistant bubble
+      - AIMessage with content=None/"" but a tool_call to ask_clarification
+        → render the call's `question` arg as an assistant bubble (the
+        clarify short-circuit stores the question only in tool args)
+      - ToolMessage / SystemMessage → skipped (internal)
     """
     out: list[HistoryMessage] = []
-    for m in history:
-        role = m.get("role")
-        content = m.get("content")
-        if role == "user" and content:
-            out.append(HistoryMessage(role="user", text=str(content)))
-        elif role == "assistant":
-            if content:
-                out.append(HistoryMessage(role="assistant", text=str(content)))
+    for m in messages:
+        if isinstance(m, HumanMessage) and m.content:
+            out.append(HistoryMessage(role="user", text=str(m.content)))
+        elif isinstance(m, AIMessage):
+            content = m.content
+            if isinstance(content, str) and content:
+                out.append(HistoryMessage(role="assistant", text=content))
                 continue
-            for tc in m.get("tool_calls") or []:
-                if (tc.get("function") or {}).get("name") != CLARIFY_TOOL_NAME:
+            # No text content — look for ask_clarification tool call.
+            for tc in m.tool_calls or []:
+                if tc.get("name") != CLARIFY_TOOL_NAME:
                     continue
-                try:
-                    args = json.loads(tc["function"].get("arguments") or "{}")
-                except (json.JSONDecodeError, KeyError):
-                    args = {}
+                args = tc.get("args") or {}
                 question = args.get("question")
                 if question:
                     out.append(HistoryMessage(role="assistant", text=str(question)))
@@ -79,11 +74,17 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
 
     result = await state.orchestrator.run_turn(session, req.message, bot_config, skills)
 
+    # LangGraph owns conversation history now — we no longer write MessageRow.
+    # ConversationManager.persist_turn with new_messages=[] still updates the
+    # SessionRow.awaiting_clarification flag, which we read on the next request
+    # to decide between fresh-turn and Command(resume=...).
     await state.conversations.persist_turn(
         session,
-        result.new_messages,
+        new_messages=[],
         awaiting_clarification=result.awaiting_clarification,
     )
+    # Set response_chars now that we know the final text length.
+    result.log_payload["response_chars"] = len(result.text or "")
     await log_turn(state.db_sessionmaker, result.log_payload)
 
     _log.info(
@@ -130,18 +131,24 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
 async def get_history(session_id: str, request: Request) -> HistoryResponse:
     """Return user/assistant bubbles for a session, used by the UI on page load.
 
-    No-op (empty response) if the session_id is unknown — opening a fresh tab
-    doesn't accidentally create a session row.
+    Pulls metadata (customer_id, bot_id, awaiting_clarification) from the
+    relational `SessionRow` and the actual message list from the LangGraph
+    checkpointer. Returns an empty response if neither knows the session.
     """
     state = request.app.state
     session = await state.conversations.load_session(session_id)
     if session is None:
         _log.info("[chat] HISTORY session=%s → no row, returning empty", session_id)
         return HistoryResponse(session_id=session_id)
-    visible = _to_visible_messages(session.history)
+
+    bot_config = state.router.get_config(session.bot_id)
+    skills = state.router.get_skills(session.bot_id)
+    messages = await state.orchestrator.get_state_messages(session_id, bot_config, skills)
+    visible = _messages_to_visible(messages)
+
     _log.info(
         "[chat] HISTORY session=%s customer=%s visible=%d raw=%d awaiting=%s",
-        session_id, session.customer_id, len(visible), len(session.history),
+        session_id, session.customer_id, len(visible), len(messages),
         session.awaiting_clarification,
     )
     return HistoryResponse(
