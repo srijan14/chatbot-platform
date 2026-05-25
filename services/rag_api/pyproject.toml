@@ -1,0 +1,33 @@
+[project]
+name = "rag-api"
+version = "0.1.0"
+description = "RAG control plane — ingestion, jobs, collections, admin search."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.0",
+    "python-dotenv>=1.0",
+    "sqlalchemy[asyncio]>=2.0",
+    "aiosqlite>=0.20",
+    "chromadb>=0.5",
+    "pypdf>=4.0",
+    "apscheduler>=3.10",
+    "openai>=1.50",
+    "httpx>=0.27",
+    "pyyaml>=6.0",
+    # rag_engine is exposed by the root `chatbot-platform` package (installed
+    # editable via `pip install -e .` at repo root). We don't list it here to
+    # avoid pulling an unrelated `rag-engine` package off PyPI.
+]
+
+[project.scripts]
+rag-api = "rag_api.app:run"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
