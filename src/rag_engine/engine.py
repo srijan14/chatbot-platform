@@ -23,6 +23,8 @@ from rag_engine.jobs.store import DocumentsRepo, JobsRepo
 from rag_engine.models import CollectionSpec, IngestionJob, SearchResult
 from rag_engine.retrieval.reranker import Reranker
 from rag_engine.retrieval.retriever import Retriever
+from rag_engine.scheduler.runs import ConnectorRunsRepo
+from rag_engine.scheduler.scheduler import RagScheduler, SourceSpec
 from rag_engine.storage.models import CollectionRow
 from rag_engine.tenancy.resolver import physical_collection_name
 from rag_engine.vector_store.base import VectorStore
@@ -124,6 +126,7 @@ class RagEngine:
         self.collections = CollectionsRepo(sessionmaker)
         self.jobs = JobsRepo(sessionmaker)
         self._documents = DocumentsRepo(sessionmaker)
+        self._connector_runs = ConnectorRunsRepo(sessionmaker)
 
         self.retriever = Retriever(vector_store, embedder, reranker)
         self.pipeline = IngestionPipeline(vector_store, embedder, chunker, self._documents)
@@ -132,6 +135,7 @@ class RagEngine:
             self.queue, self.jobs, self.pipeline, self.registry,
             collection_resolver=self._resolve_or_raise,
         )
+        self._scheduler: RagScheduler | None = None
 
     # --- lifecycle ------------------------------------------------------
     async def start(self) -> None:
@@ -139,7 +143,40 @@ class RagEngine:
         await self.runner.recover()
 
     async def stop(self) -> None:
+        if self._scheduler:
+            await self._scheduler.stop()
         await self.runner.stop()
+
+    async def bootstrap_collections(self, specs: list[CollectionSpec]) -> None:
+        """Idempotently ensure each declared collection exists.
+
+        Safe to call on every startup — existing collections are no-ops.
+        """
+        for spec in specs:
+            await self.ensure_collection(spec)
+
+    def attach_scheduler(self, sources: list[SourceSpec]) -> RagScheduler:
+        """Configure scheduled connector syncs.
+
+        Each fire enqueues a job through the same queue the REST API uses
+        — no duplicate ingestion path.
+        """
+        self._scheduler = RagScheduler(
+            sources=sources,
+            enqueue=self._enqueue_from_source,
+            runs_repo=self._connector_runs,
+        )
+        self._scheduler.start()
+        return self._scheduler
+
+    async def _enqueue_from_source(self, src: SourceSpec) -> str:
+        return await self.ingest(
+            source_name=src.connector,
+            collection=src.collection,
+            tenant_id=src.tenant,
+            source_config=src.config,
+            metadata={"scheduled_source": src.name, **src.metadata},
+        )
 
     # --- collections ----------------------------------------------------
     async def ensure_collection(self, spec: CollectionSpec) -> CollectionSpec:
