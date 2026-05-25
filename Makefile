@@ -15,6 +15,12 @@ seed:
 reset:
 	. .venv/bin/activate && telecom-seed --reset
 
+bi-seed:
+	. .venv/bin/activate && bi-seed
+
+bi-reset:
+	. .venv/bin/activate && bi-seed --reset
+
 telecom_api:
 	. .venv/bin/activate && TELECOM_API_RELOAD=1 telecom-api
 

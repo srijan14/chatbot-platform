@@ -1,0 +1,19 @@
+[project]
+name = "bi-warehouse"
+version = "0.1.0"
+description = "E-commerce demo analytics warehouse seed for the BI Assistant bot"
+requires-python = ">=3.11"
+dependencies = [
+    "sqlalchemy>=2.0",
+]
+
+[project.scripts]
+bi-seed = "bi_warehouse.seed:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["bi_warehouse*"]
