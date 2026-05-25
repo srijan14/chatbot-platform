@@ -6,18 +6,26 @@
 
 ## Concepts you must own
 
-### 1. The five processes
+### 1. The five processes (and one in-process engine)
 
 ```
-[Web/REST channel] → chatbot (:8000) → [skills]
+[Web/REST channel] → chatbot (:8000) ── skills ──┐
+                          │                       │
+                          ├── ClarificationSkill                   (in-process; structured signal tool)
                           │
-                          ├── ToolCallSkill ──► mcp_telecom (:8765) ──► telecom_api (:8001) ──► SQLite
-                          └── RagSkill       ──► rag_mcp     (:8766) ──► rag_api      (:8002) ──► Chroma + SQLite
+                          ├── ToolCallSkill ──► mcp_telecom (:8765) ──► telecom_api (:8001) ──► SQLite (operational)
+                          │
+                          ├── RagSkill     ──► rag_mcp     (:8766) ──► rag_api     (:8002) ──► Chroma + SQLite (vectors + metadata)
+                          │
+                          └── TagSkill     ──► TagPipeline (in-process)              ──► SQLite (read-only BI warehouse)
+                                                  │
+                                                  └─ LlamaIndex ObjectIndex + NLSQLRetriever + sqlglot validator
+                                                       + LangChain summarizer (separate Azure deployment)
 ```
 
-Two pairs, same shape. Each pair = **control/data plane separation**: a backing REST service that owns business logic and persistence, fronted by an MCP server that turns those capabilities into LLM-callable tools. The chatbot only ever talks MCP.
+The chatbot composes **four skills**, but only two go through an MCP service hop. ToolCall and RAG follow the same **control-plane / data-plane split**: a backing REST service owns business logic and persistence, fronted by an MCP server that turns those capabilities into LLM-callable tools. Symmetry is the architectural win — adding the 5th capability (Web Scrape) will follow that same template.
 
-Why the same shape twice: because the MCP-as-tool-surface pattern proved itself with the telecom slice, and RAG slotted in identically. **That symmetry is the architectural win** — adding the 4th capability (TAG/SQL, Web Scrape) will follow the same template.
+**TAG breaks the pattern on purpose** — it stays in-process. LlamaIndex's `NLSQLRetriever` needs co-located access to the SQLDatabase object and the ObjectIndex; pushing it behind MCP would add a network hop on every SQL generation *and* require us to serialize the whole retriever state. The honest tradeoff: TAG sacrifices process isolation for fewer moving parts at the cost of uniformity. The right next step (and what I tell interviewers) is `tag_api` + `tag_mcp` for parity — but only once we have a second SQL warehouse to justify the work.
 
 ### 2. The Skill plugin interface
 
@@ -57,9 +65,11 @@ Why MCP instead:
 
 ### 4. Configuration as the only per-bot variance
 
-`configs/bots/telecom_support.yaml` is the entire definition of a bot. The router (`src/chatbot/router/bot_router.py`) reads it and assembles skills. Three skills enabled (`tool_call`, `clarification`, `rag`), three blocks of config (`tool_call:`, `clarification:`, `rag:`), no code changes per bot.
+`configs/bots/telecom_support.yaml` is the entire definition of a bot. The router (`src/chatbot/router/bot_router.py`) reads it and assembles skills. Up to four skills enabled (`tool_call`, `clarification`, `rag`, `tag`), each with its own YAML block (`tool_call:`, `clarification:`, `rag:`, `tag:`), no code changes per bot.
 
 **Add a second bot:** copy the YAML, change `bot_id`, `persona.system_prompt`, and pick a different skill mix. That's the deliverable.
+
+For the TAG skill, the YAML also points at a **semantic layer** file (e.g. `configs/semantic_layers/telecom_bi.yaml`) that declares tables, metrics, dimensions, and few-shot examples. That's the source of truth for what the BI side of the bot can answer. The bot YAML doesn't restate it — it just references it.
 
 ---
 
@@ -67,11 +77,13 @@ Why MCP instead:
 
 1. `architecture.md` — top-of-file context section (5 min). Read the original POC framing first, *then* the RAG sub-platform section at the bottom.
 2. `src/chatbot/skills/base.py` (90 lines, 5 min) — internalize the four-method contract and the `ToolResult` fields.
-3. `src/chatbot/router/bot_router.py` (full file, 5 min) — see how skills get wired. Note the special case for clarification (always wired) vs. config-gated (tool_call, rag).
+3. `src/chatbot/router/bot_router.py` (full file, 10 min) — see how skills get wired. Note three categories: clarification (always wired), config-gated thin skills (tool_call, rag — both wrap an MCP client), config-gated heavy skill (tag — builds a LlamaIndex pipeline at startup).
 4. `src/chatbot/core/llm_orchestrator.py` — read only the public `run_turn()` method (~lines 200-350). You don't need the full implementation; you need the *shape*: one LLM call per iteration, tool dispatch by ownership, accumulate, repeat until no tool_calls or terminal signal or iteration cap.
-5. `src/chatbot/skills/tool_call_skill.py` (34 lines, 2 min) — the canonical "thin" skill. It's mostly a translator + dispatcher.
+5. `src/chatbot/skills/tool_call_skill.py` (34 lines, 2 min) — the canonical "thin" skill. Translator + dispatcher.
 6. `src/chatbot/skills/rag_skill.py` (60 lines, 3 min) — same shape, different MCP endpoint + default-injection logic.
-7. `configs/bots/telecom_support.yaml` — the *only* per-bot artifact.
+7. `src/chatbot/skills/tag_skill.py` (127 lines, 5 min) — the in-process skill. Notice how it hand-rolls its OpenAI tool schemas (no MCP translation step) and dispatches to a `TagPipeline` instance bound at construction. This is what an in-process skill looks like.
+8. `configs/bots/telecom_support.yaml` — the *only* per-bot artifact.
+9. `configs/semantic_layers/telecom_bi.yaml` (skim) — what a semantic layer looks like. Tables + metrics + dimensions + few-shots. You'll cover this in detail in Session 4.
 
 ---
 
@@ -139,7 +151,15 @@ The cap is the safety net but should be rare; if you hit it, your prompting or t
 
 **Strong answer:** Three bottlenecks I'd hit in order: (1) Chroma's collection-per-tenant works fine to ~hundreds; at 1000s I'd move to pgvector with a `tenant_id` partition column. (2) The in-process job queue caps at one worker per `rag_api` process; I'd lift it to Redis + N workers. (3) The MCP one-tenant-per-process model means 1000 `rag_mcp` processes — at that scale you'd centralize and pass tenant via tool argument with a signed JWT, not a per-process header. None of these is a rewrite — each one is a single-component swap behind a Protocol that's already in place.
 
-### Q8: "What's the most fragile part of this design?"
+### Q8: "Why is TAG in-process when the other skills are behind MCP services? Isn't that inconsistent?"
+
+**Strong answer:** It is inconsistent, on purpose. TAG's pipeline holds three pieces of co-located state — the LlamaIndex `SQLDatabase`, the `ObjectIndex` (schema RAG vectors), and the `NLSQLRetriever` — that all need to share an in-process SQLAlchemy engine. Pushing the pipeline behind MCP would add a network hop per SQL generation and force me to either serialize that state per call or stand up a stateful sidecar. Neither was worth the latency tax for one warehouse on one machine.
+
+The platform principle (separate process per capability) is still the destination, but the rule of thumb I followed is: split when you have a second consumer, a second backend, or a second team. TAG had none of those. If a second BI warehouse comes online or another product wants to query the same warehouse without dragging the chatbot in, that's the trigger to lift it into `tag_api` + `tag_mcp`. The skill interface doesn't change — only the wiring inside `bot_router._build_tag_skill` does.
+
+**Follow-up they'll ask:** "Doesn't that block testing TAG in isolation?" No — the `TagPipeline` is constructed in `bot_router._build_tag_skill` and takes its dependencies (index, summarizer LLM) as arguments. Tests construct one with mocked dependencies. The skill being in-process *helped* test ergonomics here; what we lost was deploy-time isolation.
+
+### Q9: "What's the most fragile part of this design?"
 
 **Strong answer:** The tool schema bridge — `mcp_to_openai()` in `src/chatbot/engines/tool_engine/tool_translator.py`. Both sides use JSON Schema but the envelope and field names differ. We wrote a small unit test specifically because it's the highest-leverage place for subtle bugs that *don't crash* — they just make the model behave weirdly. If I were doing this again I'd generate the translator from an OpenAPI-style schema definition rather than hand-rolling it, so it's not a place anyone can edit by accident.
 
@@ -148,6 +168,7 @@ The cap is the safety net but should be rare; if you hit it, your prompting or t
 ## What I'd improve (have these ready)
 
 - **Tool namespacing across skills** (Q4) — prevent silent collisions
+- **TAG split out into its own service** (Q8) — for parity with tools/RAG, once there's a reason to
 - **Streaming responses** — currently we wait for the whole tool loop to finish before any token reaches the user. For multi-step turns that's seconds of staring at a spinner. Real fix: streaming with progressive tool-status updates in the UI.
 - **The chatbot's MCP client opens a fresh session per call** — fine on localhost, a real latency tax in prod. The `MCPClient.__init__` docstring already flags it. Fix: a long-lived session on `app.state`.
 - **No retry policy on tool failures** — if a tool errors transiently, the model has to recover via reasoning rather than the platform retrying. A skill-level retry policy (`retry: {max: 2, backoff: 0.5}`) would harden this without changing the orchestrator.
