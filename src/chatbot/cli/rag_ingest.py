@@ -38,6 +38,7 @@ async def _run(bot_id: str, wait: bool) -> int:
         if not job_ids:
             print(f"No sources declared for bot '{bot_id}'; collection ensured.")
             return 0
+        ok = True
         for job_id in job_ids:
             job = await engine.job_status(job_id)
             status = job.status.value if job else "<missing>"
@@ -46,10 +47,8 @@ async def _run(bot_id: str, wait: bool) -> int:
             if job and job.errors:
                 for err in job.errors:
                     print(f"  error: {err}", file=sys.stderr)
-        ok = all(
-            (await engine.job_status(j)).status.value == "succeeded"  # type: ignore[union-attr]
-            for j in job_ids
-        )
+            if job is None or job.status.value != "succeeded":
+                ok = False
         return 0 if ok else 1
     finally:
         await engine.stop()
