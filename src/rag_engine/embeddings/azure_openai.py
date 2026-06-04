@@ -1,8 +1,15 @@
 """Azure OpenAI implementation of `Embedder`.
 
-Reuses the same env vars the chatbot already needs (`AZURE_OPENAI_ENDPOINT`,
-`AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_API_VERSION`) plus
-`AZURE_OPENAI_EMBEDDING_DEPLOYMENT` for the embedding deployment name.
+Azure only allows one model family per resource, so the embedding model
+typically lives on its OWN Azure resource — separate endpoint + key from the
+chat model. This embedder reads embedding-specific env vars and falls back to
+the shared chat ones only when the embedding-specific value is unset:
+
+  * `AZURE_OPENAI_EMBEDDING_ENDPOINT`    (falls back to `AZURE_OPENAI_ENDPOINT`)
+  * `AZURE_OPENAI_EMBEDDING_API_KEY`     (falls back to `AZURE_OPENAI_API_KEY`)
+  * `AZURE_OPENAI_EMBEDDING_API_VERSION` (falls back to `AZURE_OPENAI_API_VERSION`)
+  * `AZURE_OPENAI_EMBEDDING_DEPLOYMENT`  — the deployment name, used directly as
+                                           the `model` on the wire.
 
 Batching: text-embedding-3-small accepts up to 2048 inputs per request; we
 batch in groups of 64 to keep latency predictable and avoid hitting any
@@ -28,9 +35,31 @@ class AzureOpenAIEmbedder(Embedder):
         deployment: str | None = None,
         dimensions: int = DEFAULT_DIMS,
     ):
-        self._client = client or AsyncAzureOpenAI(
-            api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21"),
-        )
+        if client is None:
+            # Prefer embedding-specific creds; fall back to the shared chat
+            # resource so single-resource setups keep working unchanged.
+            endpoint = (
+                os.getenv("AZURE_OPENAI_EMBEDDING_ENDPOINT")
+                or os.getenv("AZURE_OPENAI_ENDPOINT")
+            )
+            api_key = (
+                os.getenv("AZURE_OPENAI_EMBEDDING_API_KEY")
+                or os.getenv("AZURE_OPENAI_API_KEY")
+            )
+            api_version = (
+                os.getenv("AZURE_OPENAI_EMBEDDING_API_VERSION")
+                or os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
+            )
+            # Only pass non-empty creds, so the SDK's own env auto-read still
+            # applies if something is left unset (mirrors the chat client).
+            kwargs: dict = {"api_version": api_version}
+            if endpoint:
+                kwargs["azure_endpoint"] = endpoint
+            if api_key:
+                kwargs["api_key"] = api_key
+            client = AsyncAzureOpenAI(**kwargs)
+        self._client = client
+        # The Azure deployment name IS the `model` we send on the wire.
         self.model = deployment or os.getenv(
             "AZURE_OPENAI_EMBEDDING_DEPLOYMENT", DEFAULT_MODEL
         )
