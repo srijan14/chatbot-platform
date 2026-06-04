@@ -1,0 +1,17 @@
+# Declarative collection bootstrap. The rag_api lifespan calls
+# `ensure_collection` for each entry on startup — idempotent, so existing
+# collections (in Chroma + the `collections` SQL table) are no-ops.
+#
+# Tenant ids and collection names must match
+# `^[a-zA-Z0-9][a-zA-Z0-9_\-]{0,62}$` (see rag_engine/tenancy/resolver.py).
+
+tenants:
+  telecom_demo:
+    collections:
+      - name: telecom_policies
+        embedding_model: text-embedding-3-small
+        dimensions: 1536
+        description: >
+          Public-facing telecom policy documents — cancellation/refund rules,
+          fair-usage caps, KYC/activation requirements, billing and dispute
+          handling, roaming rates.

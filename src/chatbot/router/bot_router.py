@@ -17,6 +17,7 @@ from src.chatbot.core.bot_config_store import (
 from src.chatbot.engines.tool_engine.mcp_client import MCPClient
 from src.chatbot.skills.base import Skill
 from src.chatbot.skills.clarification_skill import ClarificationSkill
+from src.chatbot.skills.rag_skill import RagSkill
 from src.chatbot.skills.tool_call_skill import ToolCallSkill
 
 
@@ -56,6 +57,25 @@ class BotRouter:
             client = MCPClient(cfg.mcp_servers[0].url)
             skills.append(ToolCallSkill(client, tool_allowlist=cfg.tool_allowlist))
 
+        if "rag" in cfg.enabled_skills:
+            if not cfg.rag.url:
+                raise RuntimeError(
+                    f"Bot '{bot_id}' has rag in enabled_skills but no "
+                    f"`rag.mcp_server.url` configured."
+                )
+            if not cfg.rag.default_collection:
+                raise RuntimeError(
+                    f"Bot '{bot_id}' rag requires `rag.default_collection`."
+                )
+            rag_client = MCPClient(cfg.rag.url)
+            skills.append(
+                RagSkill(
+                    rag_client,
+                    default_collection=cfg.rag.default_collection,
+                    top_k=cfg.rag.top_k,
+                    search_instructions=cfg.rag.search_instructions,
+                )
+            )
         if "tag" in cfg.enabled_skills:
             if cfg.tag is None:
                 raise RuntimeError(

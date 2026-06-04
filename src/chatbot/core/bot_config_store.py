@@ -75,6 +75,22 @@ class ClarificationConfig:
 
 
 @dataclass
+class RagConfig:
+    """Per-bot config for the RAG skill.
+
+    `url` points at this bot's rag_mcp endpoint (one MCP server == one
+    tenant). `default_collection` is what the skill injects when the model
+    omits the argument — most bots ask only one knowledge base so it's
+    almost always the same value.
+    """
+    url: str = ""
+    transport: str = "streamable_http"
+    default_collection: str = ""
+    top_k: int = 5
+    search_instructions: str | None = None
+
+
+@dataclass
 class BotConfig:
     bot_id: str
     name: str
@@ -101,6 +117,8 @@ class BotConfig:
     log_format: str = "json"
     # clarification skill (always wired by the router; config is optional)
     clarification: ClarificationConfig = field(default_factory=ClarificationConfig)
+    # rag skill (wired only when "rag" is in enabled_skills)
+    rag: RagConfig = field(default_factory=RagConfig)
     # tag skill (only required when 'tag' is in enabled_skills)
     tag: TagConfigSpec | None = None
 
@@ -145,6 +163,15 @@ class BotConfig:
             description=clarification_raw.get("description"),
             max_suggested_replies=int(clarification_raw.get("max_suggested_replies", 4)),
         )
+        rag_raw = data.get("rag") or {}
+        rag_mcp = rag_raw.get("mcp_server") or {}
+        rag = RagConfig(
+            url=rag_mcp.get("url", ""),
+            transport=rag_mcp.get("transport", "streamable_http"),
+            default_collection=rag_raw.get("default_collection", ""),
+            top_k=int(rag_raw.get("top_k", 5)),
+            search_instructions=rag_raw.get("search_instructions"),
+        )
 
         tag_raw = data.get("tag") or {}
         tag_spec: TagConfigSpec | None = None
@@ -186,6 +213,7 @@ class BotConfig:
             log_level=observability.get("log_level", "info"),
             log_format=observability.get("log_format", "json"),
             clarification=clarification,
+            rag=rag,
             tag=tag_spec,
         )
 

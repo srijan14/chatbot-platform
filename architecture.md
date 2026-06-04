@@ -313,3 +313,101 @@ pytest tests/ -v
 5. **Tool count creep.** Resist adding "while we're at it" tools. Each extra tool is ~30 min of mock SQL + REST + MCP wrapper. Lock the surface at 14 before Phase 2 starts.
 
 **Out of scope (explicit):** streaming responses, multi-tenancy, real auth, RAG/TAG/Web-Scrape skills (slots only), Claude Desktop stdio bridge (HTTP transport doesn't preclude it later).
+
+---
+
+## RAG sub-platform (added later)
+
+The RAG capability is implemented as its own multi-tenant sub-platform that
+serves the chatbot as the first consumer; the same `rag_engine` library can
+be vendored by any other service. It follows the exact REST + MCP split the
+telecom slice established.
+
+### Processes
+
+| Process | Port | Role |
+|---|---|---|
+| `rag_api` | 8002 | Control plane. FastAPI. Collections, ingestion jobs, admin search, hosts the scheduler. |
+| `rag_mcp` | 8766 | Data plane. MCP server exposing `search_knowledge_base` + `list_collections` to the LLM. Thin httpx wrapper over `rag_api`. One MCP server per tenant (`RAG_TENANT_ID`). |
+| `rag_engine` (library) | — | Importable package; the brains. Pluggable Protocols at every seam. |
+
+### Plugin Protocols (the swap boundaries)
+
+`src/rag_engine/`:
+- `vector_store/base.py` — `VectorStore` Protocol. Default: `ChromaVectorStore` (persistent client at `data/chroma/`).
+- `embeddings/base.py` — `Embedder` Protocol. Default: `AzureOpenAIEmbedder` (`text-embedding-3-small`, 1536 dims; reuses chatbot's Azure env).
+- `chunking/base.py` — `Chunker` Protocol. Defaults: `RecursiveCharChunker`, `MarkdownHeaderChunker`.
+- `retrieval/reranker.py` — `Reranker` Protocol. Default: `NoOpReranker`. Cross-encoders drop in here.
+- `connectors/base.py` — `SourceConnector` Protocol. Built-ins: `file_loader`, `confluence`, `notion`. Web Scraper plugs in here later as another connector — no engine changes.
+
+### Endpoints (`rag_api` :8002)
+
+All requests require an `X-Tenant-Id` header. Cross-tenant access fails closed (404 on jobs / collections that exist for other tenants).
+
+- `POST /collections` — create. `GET /collections` — list (tenant-scoped). `DELETE /collections/{name}` — drop.
+- `POST /ingest` — body `{collection, source, source_config, metadata}`. Returns `{job_id, status:"queued"}`.
+- `POST /ingest/upload` — multipart variant; stores file under `RAG_UPLOAD_DIR`.
+- `GET /jobs/{id}` — poll status. Status enum: `queued | running | succeeded | failed`. Includes counts (`documents`, `chunks`, `embedded`, `upserted`, `skipped`, `errors`).
+- `POST /search` — admin/debug. Production search goes through `rag_mcp`.
+
+### MCP surface (`rag_mcp` :8766)
+
+Just two tools — every extra one spends prompt budget on every turn:
+- `search_knowledge_base(query, collection, top_k=5, filters?)` — returns `{results, formatted}`. The `formatted` string is `[N] (source_uri[heading]) chunk` so the LLM can cite without parsing JSON.
+- `list_collections()` — discovery for multi-collection bots.
+
+### Tenant isolation (security gate)
+
+Enforced two ways; both must be in place:
+1. **Physical**: collection name is `{tenant_id}__{logical_name}` — cross-tenant queries against the wrong collection are impossible.
+2. **Metadata filter**: `Retriever.search` always appends `where={"tenant_id": tenant_id}`. Caller-supplied filters merge on top but cannot override `tenant_id`.
+
+`tests/rag/test_tenancy.py` fires if either guard is removed.
+
+### Data model (`data/rag.db`, async SQLAlchemy)
+
+- `collections` — PK `{tenant}__{logical}`. Stores embedding model + dimensions per collection so a later model swap requires a new collection (and Chroma will refuse the old one).
+- `ingestion_jobs` — async job tracking. Crash-safe: rows persist on creation; worker `recover()` re-enqueues anything left QUEUED/RUNNING.
+- `documents` — bookkeeping for dedupe. `content_hash` drives skip-if-unchanged. Chunks themselves live in Chroma — duplicating into SQL was a two-phase commit for zero benefit.
+- `connector_runs` — scheduler fires. Answers "when did this source last sync?"
+
+### Ingestion flow
+
+`POST /ingest` → row inserted `status=queued` → worker dequeues → `connector.list_documents()` → for each: `fetch_document()` → dedupe (skip / re-index decision) → `chunker.chunk()` → batched `embedder.embed_documents()` → `vector_store.upsert()` with deterministic `chunk_id = f"{doc_id}:{ordinal:04d}"` → `documents` row upserted → `status=succeeded`.
+
+Re-ingestion is idempotent: changed docs `delete_by_filter({doc_id})` first, then upsert. Same chunk ids mean even a crash mid-upsert recovers cleanly.
+
+### Scheduler
+
+`APScheduler` reads `configs/rag/sources.yaml` on lifespan startup. Each scheduled fire enqueues a job through the same `JobQueue` the REST API uses — no duplicate ingestion path. Each fire writes a `connector_runs` row.
+
+### Chatbot integration
+
+`RagSkill` (`src/chatbot/skills/rag_skill.py`) mirrors `ToolCallSkill` exactly: thin wrapper around the existing `MCPClient`, uses the existing `mcp_to_openai` translator with an allowlist of `["search_knowledge_base", "list_collections"]`. `system_prompt_addition()` teaches the model when to choose KB lookup vs. domain tools.
+
+`BotRouter` (`src/chatbot/router/bot_router.py`) gets one new branch: `if "rag" in cfg.enabled_skills: ...`. Configuration is a `rag:` block in the bot YAML (`mcp_server.url`, `default_collection`, `top_k`, `search_instructions`).
+
+`configs/bots/telecom_support.yaml` now enables `[tool_call, clarification, rag]` so the same bot composes API tool calls and KB lookups — the LLM picks which one the question needs.
+
+### Demo
+
+```bash
+make rag_api &      # :8002
+make rag_mcp &      # :8766
+# Collection + seed corpus ingest:
+make rag-bootstrap
+# Then through the chatbot UI on :8000, ask:
+#   "What is the cancellation policy for postpaid plans?"
+#   → triggers search_knowledge_base → grounded answer with [1] citations
+# vs. "What plan am I on?" → triggers get_current_plan (tool_call skill)
+```
+
+### Critical files
+
+- `src/rag_engine/engine.py` — RagEngine facade
+- `src/rag_engine/vector_store/chroma_store.py` — kNN backend
+- `services/rag_api/src/rag_api/routes/ingest.py` — pipeline trigger
+- `services/rag_mcp/src/rag_mcp/tools.py` — the MCP tool schema the LLM sees
+- `src/chatbot/skills/rag_skill.py` — chatbot ↔ RAG bridge
+- `configs/rag/collections.yaml` + `configs/rag/sources.yaml` — declarative deployment
+- `tests/rag/test_tenancy.py` — the security gate
