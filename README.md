@@ -54,8 +54,14 @@ Local processes (the telecom demo needs the first three; RAG adds two more):
 ## Quick start
 
 ```bash
-# 1. Install — root chatbot + both services + dev deps
-make install                              # creates .venv, installs chatbot, telecom-api, mcp-telecom
+# 0. Activate your Python 3.11 environment FIRST, then run make from it.
+#    pyenv:  pyenv activate env_311
+#    venv:   python -m venv .venv && . .venv/bin/activate
+#    (venv users who prefer make to activate for them can instead pass
+#     ACTIVATE='. .venv/bin/activate' to any target, e.g. `make run ACTIVATE=...`.)
+
+# 1. Install — platform + all services + dev deps into the active env
+make install
 
 # 2. Configure credentials
 cp .env.example .env
@@ -69,10 +75,11 @@ cp .env.example .env
 # 4. Seed SQLite with 5 demo customers
 make seed
 
-# 5. Run the three services. Easiest: honcho (one terminal)
-make run                                  # uses Procfile
+# 5. Run the services. Easiest: honcho (one terminal) — reads the Procfile
+make run                                  # starts all 5: telecom_api, mcp_telecom,
+                                          # chatbot, rag_api, rag_mcp
 
-# Or, in three separate terminals:
+# Or, in separate terminals:
 make telecom_api
 make mcp_telecom
 make chatbot
@@ -173,11 +180,16 @@ tail -f logs/turns.jsonl | jq .
 ## Tests
 
 ```bash
+# With your env active (pyenv activate env_311 / . .venv/bin/activate):
+
 # Unit + REST API (no LLM, no MCP server needed)
-.venv/bin/pytest tests/test_telecom_api.py tests/test_tool_translator.py -v
+pytest tests/test_telecom_api.py tests/test_tool_translator.py -v
 
 # MCP server integration (spawns subprocesses; opt-in)
-RUN_INTEGRATION=1 .venv/bin/pytest tests/test_mcp_tools.py -v
+RUN_INTEGRATION=1 pytest tests/test_mcp_tools.py -v
+
+# Everything
+make test
 ```
 
 ## Layout
