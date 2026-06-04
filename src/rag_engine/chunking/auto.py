@@ -7,9 +7,9 @@ Picks the right strategy per document so callers can hand the engine a single
     sections, and each chunk carries `metadata["heading"]` for nicer citations).
   - everything else  -> `RecursiveCharChunker` (format-neutral character budget).
 
-This is what the live `rag_api` wires in by default. Without it the service
-would chunk markdown with the recursive splitter and never populate the
-`heading` metadata that `rag_mcp` renders in citations.
+This is what the chatbot's in-process RAG engine wires in by default. Without
+it, markdown would be chunked with the recursive splitter and never populate the
+`heading` metadata that `RagSkill` renders in citations.
 """
 from __future__ import annotations
 

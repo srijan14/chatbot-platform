@@ -17,6 +17,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver  # noqa: E402
 from src.chatbot.api import chat as chat_api  # noqa: E402
 from src.chatbot.core.conversation_manager import ConversationManager  # noqa: E402
 from src.chatbot.core.langgraph_orchestrator import LangGraphOrchestrator  # noqa: E402
+from src.chatbot.core.rag_runtime import bootstrap_bot_rag, build_rag_engine  # noqa: E402
 from src.chatbot.persistence.db import create_engine_and_sessionmaker, init_schema  # noqa: E402
 from src.chatbot.router.bot_router import BotRouter  # noqa: E402
 
@@ -69,7 +70,25 @@ async def lifespan(app: FastAPI):
             os.getenv("AZURE_OPENAI_API_VERSION", "2025-01-01-preview"),
             int(os.getenv("CHATBOT_DAILY_TOKEN_CAP", "1000000")),
         )
-        app.state.router = BotRouter()
+        # In-process RAG: the platform owns indexing + retrieval directly (no
+        # rag_mcp / rag_api hop). One shared RagEngine; each bot is isolated to
+        # its own collection ({bot_id}__{logical}). Best-effort — a bad embedding
+        # deployment must not stop the chatbot from booting.
+        try:
+            rag_engine, rag_db = await build_rag_engine()
+            await rag_engine.start()
+            stack.push_async_callback(rag_engine.stop)
+            stack.push_async_callback(rag_db.dispose)
+            app.state.rag_engine = rag_engine
+        except Exception as exc:
+            startup_log.warning(
+                "RAG engine init failed (%s: %s); rag-enabled bots will error "
+                "until this is fixed.", type(exc).__name__, exc,
+            )
+            rag_engine = None
+            app.state.rag_engine = None
+
+        app.state.router = BotRouter(rag_engine=rag_engine)
         app.state.conversations = ConversationManager(sessionmaker)
 
         # Tiny LLM ping so credential / deployment / API-version failures
@@ -108,6 +127,18 @@ async def lifespan(app: FastAPI):
             except FileNotFoundError:
                 # Bot config not on disk; skip pre-warm.
                 continue
+            # Ensure this bot's collection exists and ingest its declared
+            # sources (idempotent; dedupe skips unchanged docs on restart).
+            # Non-blocking enqueue — the background JobRunner drains it.
+            if rag_engine is not None and "rag" in bot_config.enabled_skills:
+                try:
+                    await bootstrap_bot_rag(rag_engine, bot_config, ingest=True)
+                except Exception as exc:
+                    startup_log.warning(
+                        "rag bootstrap failed for %s (%s: %s); search may be "
+                        "empty until ingestion succeeds.",
+                        bot_id, type(exc).__name__, exc,
+                    )
             try:
                 skills = app.state.router.get_skills(bot_id)
             except Exception as exc:

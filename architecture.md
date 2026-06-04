@@ -318,9 +318,20 @@ pytest tests/ -v
 
 ## RAG sub-platform (added later)
 
-The RAG capability is implemented as its own multi-tenant sub-platform that
-serves the chatbot as the first consumer; the same `rag_engine` library can
-be vendored by any other service. It follows the exact REST + MCP split the
+> **Superseded (in-process RAG).** RAG no longer runs as standalone `rag_api` +
+> `rag_mcp` services. The chatbot now imports the `rag_engine` library
+> **in-process**: it owns indexing and retrieval directly, giving each bot its
+> own collection (`{bot_id}__{logical}`). The `rag_engine` design below
+> (chunking, embedding, retrieval, jobs, tenancy, connectors) is unchanged and
+> still accurate — only the deployment shape changed (no REST/MCP hop; `RagSkill`
+> calls `RagEngine` directly; sources are declared per-bot in the bot YAML and
+> ingested on startup / via `make rag-ingest`). See the README "RAG
+> knowledge-base demo" for current run steps. The original service-split design
+> is kept below for history.
+
+The RAG capability was originally implemented as its own multi-tenant sub-platform
+that served the chatbot as the first consumer; the same `rag_engine` library can
+be vendored by any other service. It followed the REST + MCP split the
 telecom slice established.
 
 ### Processes

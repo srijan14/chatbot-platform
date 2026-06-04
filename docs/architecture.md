@@ -393,7 +393,7 @@ The orchestrator does not need to change. The skill→tool adapter handles the L
 # Activate your env first (pyenv activate env_311, or a .venv).
 make install         # pip-installs platform + services into the active env
 make bi-seed         # populates data/bi_warehouse.db with ~500 orders
-make run             # honcho-managed: telecom_api + mcp_telecom + chatbot + rag_api + rag_mcp
+make run             # honcho-managed: telecom_api + mcp_telecom + chatbot (RAG is in-process)
 ```
 
 The `make run` target uses `Procfile` to start three processes:

@@ -5,9 +5,11 @@ A generalized chatbot platform. The first vertical slice implemented the
 Transactional") for a **telecom customer support** demo. Since then two more
 skills have come online:
 
-- **RAG** — a multi-tenant knowledge-base sub-platform (`rag_api` + `rag_mcp` +
-  the `rag_engine` library). The telecom bot uses it to answer policy / FAQ
-  questions with cited passages. See [RAG knowledge-base demo](#rag-knowledge-base-demo).
+- **RAG** — an **in-process** knowledge base. The chatbot imports the
+  `rag_engine` library directly (no separate services): it indexes each bot's
+  documents into its own vector-DB collection and retrieves with citations at
+  query time. The telecom bot uses it for policy / FAQ answers. See
+  [RAG knowledge-base demo](#rag-knowledge-base-demo).
 - **TAG / SQL** — NL→SQL over an analytics warehouse, powering the **BI
   Assistant** bot (`configs/bots/bi_assistant.yaml`).
 
@@ -22,15 +24,14 @@ The structure stays generalized so new skills slot in without touching the core.
 
 ## Architecture
 
-Local processes (the telecom demo needs the first three; RAG adds two more):
+Three local processes. RAG runs **in-process** inside `chatbot` (it imports the
+`rag_engine` library), so there are no separate RAG services.
 
 | Process | Port | Role |
 |---|---|---|
 | `telecom_api` | 8001 | Mock internal telecom REST API. SQLite-backed. |
 | `mcp_telecom` | 8765 | MCP server (FastMCP, Streamable HTTP). Wraps the REST API as 14 MCP tools. |
-| `chatbot`     | 8000 | FastAPI chatbot service. `/chat` REST endpoint, web UI, Azure OpenAI tool-use loop, MCP client. |
-| `rag_api`     | 8002 | RAG control plane. Collections, ingestion jobs, admin search, scheduler. SQLite + Chroma. |
-| `rag_mcp`     | 8766 | RAG data plane. MCP server exposing `search_knowledge_base` + `list_collections`. One process per tenant. |
+| `chatbot`     | 8000 | FastAPI chatbot service. `/chat` REST endpoint, web UI, Azure OpenAI tool-use loop, MCP client (Tool Call), and the in-process RAG engine (Chroma + Azure embeddings). |
 
 ## Prerequisites
 
@@ -76,8 +77,8 @@ cp .env.example .env
 make seed
 
 # 5. Run the services. Easiest: honcho (one terminal) — reads the Procfile
-make run                                  # starts all 5: telecom_api, mcp_telecom,
-                                          # chatbot, rag_api, rag_mcp
+make run                                  # starts telecom_api, mcp_telecom, chatbot
+                                          # (RAG runs inside chatbot — no extra process)
 
 # Or, in separate terminals:
 make telecom_api
@@ -114,39 +115,32 @@ The web UI has a customer-picker dropdown — switch identity without re-seeding
 The telecom bot also answers **policy / FAQ** questions from a document corpus
 via the RAG skill — no new bot needed, it's already enabled in
 `configs/bots/telecom_support.yaml` (`skills.enabled: [tool_call, clarification, rag]`).
-This exercises the **RAG Skill → rag_mcp → rag_api → rag_engine** path the same
-way the telecom tools exercise the Tool Call path.
+RAG runs **in-process**: `RagSkill` calls the `rag_engine` library directly
+inside the chatbot — no separate services.
 
 **What's in the box:**
 - Corpus: `data/rag_corpus/telecom_policies/*.md` (cancellation, fair-usage,
   KYC/activation, refunds/billing, roaming).
-- Tenant: `telecom_demo` (set via `RAG_TENANT_ID`, injected as `X-Tenant-Id` by
-  `rag_mcp` on every `rag_api` call).
-- Collection `telecom_policies` is auto-created on `rag_api` startup from
-  `configs/rag/collections.yaml`, and a scheduled file sync is declared in
-  `configs/rag/sources.yaml` (fires every 15 min).
+- Each bot is its own tenant: the physical Chroma collection is
+  `{bot_id}__{collection}` → here `telecom_support__telecom_policies`.
+- The collection + its sources are declared in the bot YAML's `rag:` block.
+  On chatbot startup the platform ensures the collection exists and ingests
+  those sources (idempotent — dedupe skips unchanged files).
 
 **Prerequisite:** an Azure embedding deployment. Set
 `AZURE_OPENAI_EMBEDDING_DEPLOYMENT` in `.env` to an Azure deployment of
 `text-embedding-3-small` (1536 dims — the collection pins the dimensions).
 
 ```bash
-# 1. Start the two RAG processes (in addition to the telecom ones).
-#    `make run` (honcho) already starts all five — see the Procfile.
-make rag_api       # :8002 — auto-creates the telecom_policies collection
-make rag_mcp       # :8766 — MCP server pinned to RAG_TENANT_ID=telecom_demo
+# 1. Run the platform (RAG is inside the chatbot — no extra process).
+make run
 
-# 2. Ingest the seed corpus (idempotent — re-running skips unchanged files).
-#    Pre-req: rag_api running on :8002.
-make rag-bootstrap
+# 2. Index the corpus deterministically (optional — startup also enqueues it).
+#    Builds the same in-process engine and waits for the job to finish.
+make rag-ingest        # → python -m src.chatbot.cli.rag_ingest telecom_support
+#    Prints e.g.  job=... status=succeeded counts={'documents':5,'upserted':...}
 
-# 3. Confirm the chunks landed (admin search, bypasses the LLM).
-curl -sS -X POST http://localhost:8002/search \
-  -H 'Content-Type: application/json' \
-  -H 'X-Tenant-Id: telecom_demo' \
-  -d '{"query":"how long is the cancellation notice period","collection":"telecom_policies","top_k":3}' | jq .
-
-# 4. In the chat UI (:8000), ask a policy question — the bot routes to RAG:
+# 3. In the chat UI (:8000), ask a policy question — the bot routes to RAG:
 #   "What is the cancellation policy for postpaid plans?"
 #   → search_knowledge_base → grounded answer citing [1] (source_uri [heading])
 # vs. a record question, which routes to the telecom tools instead:
@@ -156,8 +150,12 @@ curl -sS -X POST http://localhost:8002/search \
 The model decides per turn whether the question needs the knowledge base (RAG)
 or a customer-specific tool — the routing hints live in the bot YAML's
 `rag.search_instructions`. Citations render as `[N] (source_uri [heading])`;
-the `[heading]` comes from the markdown header chunker, which `rag_api` selects
+the `[heading]` comes from the markdown header chunker, which the engine selects
 automatically for `.md` sources.
+
+**Adding RAG to another bot** is config-only: add a `rag:` block (collection +
+sources) to its YAML and put `rag` in `skills.enabled`. It gets its own isolated
+collection automatically.
 
 ## Verifying without the UI
 
