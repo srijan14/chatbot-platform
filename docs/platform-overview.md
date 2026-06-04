@@ -113,7 +113,7 @@ A skill is one unit of capability. Bots opt in to skills via config. Today the p
 | **Tool Call** | Call internal services to actually *do* things — change a plan, reset a PIN, pay a bill, create a ticket. |
 | **Web Scrape** | Pull content from public websites and turn it into knowledge the bot can use. Feeds into RAG. |
 
-**Live today**: Tool Call (powering Telecom Support) and TAG (powering BI Assistant). RAG and Web Scrape are designed in the architecture and not yet built.
+**Live today**: Tool Call (powering Telecom Support), TAG (powering BI Assistant), and RAG (a multi-tenant knowledge-base sub-platform the Telecom Support bot uses for policy/FAQ answers). Web Scrape is designed in the architecture and not yet built — it plugs into the RAG engine as another connector.
 
 ### Engines
 

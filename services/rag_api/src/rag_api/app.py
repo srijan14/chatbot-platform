@@ -23,7 +23,7 @@ from fastapi import FastAPI  # noqa: E402
 
 from rag_api.routes import collections, health, ingest, jobs, search  # noqa: E402
 from rag_engine import RagEngine  # noqa: E402
-from rag_engine.chunking import RecursiveCharChunker  # noqa: E402
+from rag_engine.chunking import AutoChunker  # noqa: E402
 from rag_engine.config import load_collections_yaml, load_sources_yaml  # noqa: E402
 from rag_engine.embeddings import AzureOpenAIEmbedder  # noqa: E402
 from rag_engine.storage.db import create_engine_and_sessionmaker, init_schema  # noqa: E402
@@ -37,7 +37,10 @@ async def lifespan(app: FastAPI):
 
     vstore = ChromaVectorStore()
     embedder = AzureOpenAIEmbedder()
-    chunker = RecursiveCharChunker()
+    # AutoChunker dispatches on mime type: markdown -> heading-aware chunks
+    # (populates metadata["heading"] for citations), everything else ->
+    # recursive character budget.
+    chunker = AutoChunker()
 
     engine = RagEngine(
         vector_store=vstore,
