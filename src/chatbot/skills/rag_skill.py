@@ -128,10 +128,24 @@ class RagSkill(Skill):
                     top_k=top_k,
                     filters=filters,
                 )
-            except KeyError as exc:
-                # Collection missing for this tenant — surface clearly.
-                log.warning("[rag] search failed: %s", exc)
-                return ToolResult(text=f"Knowledge base unavailable: {exc}", is_error=True)
+            except Exception as exc:
+                # Never let a retrieval failure (missing collection, embedding
+                # endpoint down, vector-store error, …) propagate out of the
+                # tool: a raised exception can crash the agent turn and leave an
+                # orphaned tool_call in the checkpoint, which then 400s every
+                # later turn. Always return a ToolResult so the model gets a
+                # clean error message and can apologise instead.
+                log.warning(
+                    "[rag] search failed collection=%s tenant=%s: %s: %s",
+                    self.collection, self.tenant_id, type(exc).__name__, exc,
+                )
+                return ToolResult(
+                    text=(
+                        f"Knowledge base search failed "
+                        f"({type(exc).__name__}: {exc})."
+                    ),
+                    is_error=True,
+                )
             log.info(
                 "[rag] search collection=%s tenant=%s top_k=%d hits=%d",
                 self.collection, self.tenant_id, top_k, len(results),
@@ -139,7 +153,14 @@ class RagSkill(Skill):
             return ToolResult(text=_format_results(results))
 
         if name == LIST_TOOL:
-            specs = await self.engine.list_collections(self.tenant_id)
+            try:
+                specs = await self.engine.list_collections(self.tenant_id)
+            except Exception as exc:
+                log.warning("[rag] list_collections failed: %s", exc)
+                return ToolResult(
+                    text=f"Could not list collections ({type(exc).__name__}: {exc}).",
+                    is_error=True,
+                )
             if not specs:
                 return ToolResult(text="No collections available.")
             lines = [f"- {s.name}: {s.description or ''}".rstrip() for s in specs]

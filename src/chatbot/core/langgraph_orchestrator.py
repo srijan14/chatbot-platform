@@ -326,6 +326,31 @@ class LangGraphOrchestrator:
             log_payload=log_payload,
         )
 
+    async def clear_session(self, session_id: str) -> None:
+        """Wipe a session's persisted conversation from the checkpointer.
+
+        The agent's real message history lives in the LangGraph checkpointer
+        (keyed by thread_id == session_id), NOT in the relational tables. A
+        reset must clear it here too, otherwise a poisoned thread (e.g. an
+        orphaned tool_call left by a crashed turn) keeps replaying and 400s.
+        """
+        saver = self._checkpointer
+        try:
+            if hasattr(saver, "adelete_thread"):
+                await saver.adelete_thread(session_id)
+            elif hasattr(saver, "delete_thread"):
+                saver.delete_thread(session_id)
+            else:  # older checkpointer without thread deletion — best effort
+                _log.warning(
+                    "[orch] checkpointer has no (a)delete_thread; cannot clear "
+                    "thread for session=%s", session_id,
+                )
+        except Exception as exc:
+            _log.warning(
+                "[orch] clear_session failed for %s (%s: %s)",
+                session_id, type(exc).__name__, exc,
+            )
+
     async def get_state_messages(
         self,
         session_id: str,

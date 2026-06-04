@@ -86,6 +86,19 @@ async def test_execute_empty_query_is_error():
     assert out.is_error
 
 
+@pytest.mark.asyncio
+async def test_search_failure_returns_error_result_never_raises():
+    # A retrieval failure (e.g. embedding endpoint down) must NOT propagate —
+    # raising would crash the agent turn and orphan the tool_call in the
+    # checkpoint, 400-ing every later turn. It must come back as a ToolResult.
+    engine = AsyncMock(spec=RagEngine)
+    engine.search.side_effect = RuntimeError("embedding endpoint 404")
+    skill = RagSkill(engine, tenant_id="b", collection="kb")
+    out = await skill.execute_tool("search_knowledge_base", {"query": "refund"})
+    assert out.is_error
+    assert "embedding endpoint 404" in out.text
+
+
 def test_system_prompt_addition_override():
     assert "search_knowledge_base" in RagSkill(
         _fake_engine(), tenant_id="b", collection="kb"
