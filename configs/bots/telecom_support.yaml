@@ -72,12 +72,21 @@ tool_call:
     - get_complaint_status
 
 rag:
-  mcp_server:
-    transport: streamable_http
-    url: http://localhost:8766/mcp
-  # The knowledge base the skill targets when the model doesn't specify one.
-  # Created via `POST :8002/collections` (see Makefile target `rag-bootstrap`).
-  default_collection: telecom_policies
+  # In-process RAG (the platform owns indexing + retrieval directly — no
+  # rag_mcp/rag_api services). tenant == bot_id, so the physical Chroma
+  # collection is `telecom_support__telecom_policies`.
+  collection: telecom_policies
+  embedding:
+    model: text-embedding-3-small
+    dimensions: 1536
+  # Sources ingested on startup (idempotent) and via `make rag-ingest`.
+  sources:
+    - connector: file_loader
+      config:
+        path: ./data/rag_corpus/telecom_policies
+        glob: "**/*.md"
+      metadata:
+        owner: support_ops
   top_k: 5
   # Layered on top of the platform default (in RagSkill) — domain-specific
   # routing hints so the model knows when to choose RAG vs. tool_call.

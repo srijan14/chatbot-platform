@@ -76,16 +76,24 @@ class ClarificationConfig:
 
 @dataclass
 class RagConfig:
-    """Per-bot config for the RAG skill.
+    """Per-bot config for the in-process RAG skill.
 
-    `url` points at this bot's rag_mcp endpoint (one MCP server == one
-    tenant). `default_collection` is what the skill injects when the model
-    omits the argument — most bots ask only one knowledge base so it's
-    almost always the same value.
+    The platform owns RAG in-process (no MCP/REST hop): each bot gets its own
+    vector-DB collection, scoped by tenant_id == bot_id (physical name
+    `{bot_id}__{collection}`).
+
+    `collection`  logical collection name (required when rag is enabled).
+    `sources`     list of ingestion sources, each `{connector, config, metadata?}`
+                  — e.g. {"connector": "file_loader",
+                          "config": {"path": "...", "glob": "**/*.md"}}.
+                  Ingested on startup (idempotent) and via the `rag-ingest` CLI.
+    `embedding_model` / `dimensions`  pin the embedding space for the collection.
+    `top_k`       default passages returned when the model omits it.
     """
-    url: str = ""
-    transport: str = "streamable_http"
-    default_collection: str = ""
+    collection: str = ""
+    sources: list[dict] = field(default_factory=list)
+    embedding_model: str = "text-embedding-3-small"
+    dimensions: int = 1536
     top_k: int = 5
     search_instructions: str | None = None
 
@@ -164,11 +172,12 @@ class BotConfig:
             max_suggested_replies=int(clarification_raw.get("max_suggested_replies", 4)),
         )
         rag_raw = data.get("rag") or {}
-        rag_mcp = rag_raw.get("mcp_server") or {}
+        rag_embedding = rag_raw.get("embedding") or {}
         rag = RagConfig(
-            url=rag_mcp.get("url", ""),
-            transport=rag_mcp.get("transport", "streamable_http"),
-            default_collection=rag_raw.get("default_collection", ""),
+            collection=rag_raw.get("collection", ""),
+            sources=list(rag_raw.get("sources") or []),
+            embedding_model=rag_embedding.get("model", "text-embedding-3-small"),
+            dimensions=int(rag_embedding.get("dimensions", 1536)),
             top_k=int(rag_raw.get("top_k", 5)),
             search_instructions=rag_raw.get("search_instructions"),
         )

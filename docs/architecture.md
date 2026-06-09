@@ -390,9 +390,10 @@ The orchestrator does not need to change. The skill→tool adapter handles the L
 ### 8.1 Running locally
 
 ```sh
-make install         # creates a .venv and pip-installs everything
+# Activate your env first (pyenv activate env_311, or a .venv).
+make install         # pip-installs platform + services into the active env
 make bi-seed         # populates data/bi_warehouse.db with ~500 orders
-make run             # honcho-managed: telecom_api + mcp_telecom + chatbot
+make run             # honcho-managed: telecom_api + mcp_telecom + chatbot (RAG is in-process)
 ```
 
 The `make run` target uses `Procfile` to start three processes:

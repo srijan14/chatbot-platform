@@ -1,50 +1,38 @@
-"""RagSkill — verify prep + dispatch + default injection without booting MCP."""
+"""RagSkill — in-process engine variant.
+
+Two layers of coverage:
+  * Unit: a fake RagEngine verifies tool schema, scoping (tenant/collection),
+    default top_k injection, and the [N] citation formatting.
+  * Integration: the real RagEngine (fake embedder + tmp Chroma) proves the
+    skill returns a grounded, cited passage end-to-end without any services.
+"""
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
 
-from src.chatbot.engines.tool_engine.mcp_client import MCPToolDef
+from rag_engine import RagEngine
+from rag_engine.chunking.recursive import RecursiveCharChunker
+from rag_engine.models import CollectionSpec, JobStatus, SearchResult
+from rag_engine.vector_store.chroma_store import ChromaVectorStore
+
 from src.chatbot.skills.rag_skill import RagSkill
 
 
-def _fake_mcp_tools() -> list[MCPToolDef]:
-    return [
-        MCPToolDef(
-            name="search_knowledge_base",
-            description="Search KB.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string"},
-                    "collection": {"type": "string"},
-                    "top_k": {"type": "integer"},
-                },
-                "required": ["query"],
-            },
-        ),
-        MCPToolDef(
-            name="list_collections",
-            description="List collections.",
-            input_schema={"type": "object", "properties": {}},
-        ),
-        MCPToolDef(
-            name="irrelevant_tool",
-            description="Should be filtered by allowlist.",
-            input_schema={"type": "object", "properties": {}},
-        ),
-    ]
+# --- unit ------------------------------------------------------------------
+
+def _fake_engine(results: list[SearchResult] | None = None) -> AsyncMock:
+    engine = AsyncMock(spec=RagEngine)
+    engine.search.return_value = results or []
+    return engine
 
 
 @pytest.mark.asyncio
-async def test_prepare_tools_filters_to_allowlist():
-    mcp = AsyncMock()
-    mcp.list_tools.return_value = _fake_mcp_tools()
-
-    skill = RagSkill(mcp, default_collection="kb", top_k=5)
+async def test_prepare_tools_exposes_search_and_list():
+    skill = RagSkill(_fake_engine(), tenant_id="bot1", collection="kb")
     tools = await skill.prepare_tools()
-
     names = {t["function"]["name"] for t in tools}
     assert names == {"search_knowledge_base", "list_collections"}
     assert skill.owns_tool("search_knowledge_base")
@@ -52,41 +40,111 @@ async def test_prepare_tools_filters_to_allowlist():
 
 
 @pytest.mark.asyncio
-async def test_execute_tool_injects_defaults_for_search():
-    mcp = AsyncMock()
-    mcp.list_tools.return_value = _fake_mcp_tools()
-    mcp.call_tool.return_value = ('{"results": []}', False)
-
-    skill = RagSkill(mcp, default_collection="telecom_policies", top_k=7)
-    await skill.prepare_tools()
+async def test_execute_scopes_to_bot_collection_and_default_top_k():
+    engine = _fake_engine()
+    skill = RagSkill(engine, tenant_id="telecom_support", collection="telecom_policies", top_k=7)
 
     await skill.execute_tool("search_knowledge_base", {"query": "cancel"})
-    called_args = mcp.call_tool.call_args
-    assert called_args[0][0] == "search_knowledge_base"
-    args = called_args[0][1]
-    assert args["query"] == "cancel"
-    assert args["collection"] == "telecom_policies"
-    assert args["top_k"] == 7
+
+    engine.search.assert_awaited_once()
+    kwargs = engine.search.call_args.kwargs
+    assert kwargs["query"] == "cancel"
+    assert kwargs["collection"] == "telecom_policies"
+    assert kwargs["tenant_id"] == "telecom_support"
+    assert kwargs["top_k"] == 7
 
 
 @pytest.mark.asyncio
-async def test_execute_tool_does_not_overwrite_caller_collection():
-    mcp = AsyncMock()
-    mcp.list_tools.return_value = _fake_mcp_tools()
-    mcp.call_tool.return_value = ("ok", False)
-    skill = RagSkill(mcp, default_collection="default", top_k=5)
-    await skill.prepare_tools()
+async def test_execute_honors_caller_top_k():
+    engine = _fake_engine()
+    skill = RagSkill(engine, tenant_id="b", collection="kb", top_k=5)
+    await skill.execute_tool("search_knowledge_base", {"query": "x", "top_k": 2})
+    assert engine.search.call_args.kwargs["top_k"] == 2
 
-    await skill.execute_tool(
-        "search_knowledge_base", {"query": "x", "collection": "explicit"}
+
+@pytest.mark.asyncio
+async def test_execute_formats_citations():
+    results = [
+        SearchResult(
+            chunk_id="d:0", doc_id="d", text="Refund within 7 days.", score=0.9,
+            source_uri="file:///policies/refunds.md",
+            metadata={"heading": "Refunds"},
+        )
+    ]
+    skill = RagSkill(_fake_engine(results), tenant_id="b", collection="kb")
+    out = await skill.execute_tool("search_knowledge_base", {"query": "refund"})
+    assert not out.is_error
+    assert "[1]" in out.text
+    assert "file:///policies/refunds.md" in out.text
+    assert "[Refunds]" in out.text
+
+
+@pytest.mark.asyncio
+async def test_execute_empty_query_is_error():
+    skill = RagSkill(_fake_engine(), tenant_id="b", collection="kb")
+    out = await skill.execute_tool("search_knowledge_base", {"query": "  "})
+    assert out.is_error
+
+
+@pytest.mark.asyncio
+async def test_search_failure_returns_error_result_never_raises():
+    # A retrieval failure (e.g. embedding endpoint down) must NOT propagate —
+    # raising would crash the agent turn and orphan the tool_call in the
+    # checkpoint, 400-ing every later turn. It must come back as a ToolResult.
+    engine = AsyncMock(spec=RagEngine)
+    engine.search.side_effect = RuntimeError("embedding endpoint 404")
+    skill = RagSkill(engine, tenant_id="b", collection="kb")
+    out = await skill.execute_tool("search_knowledge_base", {"query": "refund"})
+    assert out.is_error
+    assert "embedding endpoint 404" in out.text
+
+
+def test_system_prompt_addition_override():
+    assert "search_knowledge_base" in RagSkill(
+        _fake_engine(), tenant_id="b", collection="kb"
+    ).system_prompt_addition()
+    assert RagSkill(
+        _fake_engine(), tenant_id="b", collection="kb", search_instructions="custom hint"
+    ).system_prompt_addition() == "custom hint"
+
+
+# --- integration (real engine, no services) --------------------------------
+
+@pytest.mark.asyncio
+async def test_skill_over_real_engine_returns_grounded_passage(tmp_path, rag_sm, fake_embedder):
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "cancel.md").write_text(
+        "# Cancellation\nCancellation applies at end of cycle. Refund within 7 business days."
     )
-    args = mcp.call_tool.call_args[0][1]
-    assert args["collection"] == "explicit"
 
+    engine = RagEngine(
+        vector_store=ChromaVectorStore(persist_path=str(tmp_path / "chroma")),
+        embedder=fake_embedder,
+        chunker=RecursiveCharChunker(size=200, overlap=20),
+        sessionmaker=rag_sm,
+    )
+    await engine.start()
+    try:
+        await engine.ensure_collection(
+            CollectionSpec(name="kb", tenant_id="telecom_support",
+                           embedding_model="fake", dimensions=8)
+        )
+        job_id = await engine.ingest(
+            source_name="file_loader", collection="kb", tenant_id="telecom_support",
+            source_config={"path": str(corpus), "glob": "**/*.md"},
+        )
+        for _ in range(50):
+            job = await engine.job_status(job_id)
+            if job.status in (JobStatus.SUCCEEDED, JobStatus.FAILED):
+                break
+            await asyncio.sleep(0.05)
+        assert job.status == JobStatus.SUCCEEDED, f"job failed: {job.errors}"
 
-def test_system_prompt_addition_uses_override_when_provided():
-    s_default = RagSkill(AsyncMock(), default_collection="k", search_instructions=None)
-    assert "search_knowledge_base" in s_default.system_prompt_addition()
-
-    s_custom = RagSkill(AsyncMock(), default_collection="k", search_instructions="custom hint")
-    assert s_custom.system_prompt_addition() == "custom hint"
+        skill = RagSkill(engine, tenant_id="telecom_support", collection="kb", top_k=3)
+        out = await skill.execute_tool("search_knowledge_base", {"query": "refund timeline"})
+        assert not out.is_error
+        assert "[1]" in out.text
+        assert "Refund" in out.text or "Cancellation" in out.text
+    finally:
+        await engine.stop()

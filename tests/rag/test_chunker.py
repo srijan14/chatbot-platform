@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 
+from rag_engine.chunking.auto import AutoChunker
 from rag_engine.chunking.recursive import RecursiveCharChunker
 from rag_engine.chunking.structural import MarkdownHeaderChunker
 from rag_engine.models import Document, doc_id_for
@@ -77,6 +78,24 @@ content of B which is a bit longer to occupy a chunk on its own.
     assert "Intro" in headings
     assert "Intro > Section A" in headings
     assert "Intro > Section B" in headings
+
+
+@pytest.mark.asyncio
+async def test_auto_chunker_routes_markdown_to_header_chunker():
+    md = "# Intro\nsome intro text.\n\n## Section A\ncontent of A.\n"
+    chunks = await AutoChunker().chunk(_doc(md, mime="text/markdown"))
+    headings = [c.metadata.get("heading") for c in chunks]
+    # Heading metadata is only populated by the markdown chunker — its presence
+    # proves AutoChunker dispatched to MarkdownHeaderChunker for text/markdown.
+    assert "Intro > Section A" in headings
+
+
+@pytest.mark.asyncio
+async def test_auto_chunker_routes_plain_text_to_recursive_chunker():
+    chunks = await AutoChunker().chunk(_doc("just some plain text", mime="text/plain"))
+    # Recursive chunker never sets a heading.
+    assert all("heading" not in c.metadata for c in chunks)
+    assert chunks[0].metadata["tenant_id"] == "t1"
 
 
 @pytest.mark.asyncio

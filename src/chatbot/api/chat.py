@@ -162,5 +162,9 @@ async def get_history(session_id: str, request: Request) -> HistoryResponse:
 
 @router.post("/chat/reset")
 async def reset(req: ChatRequest, request: Request):
+    # Clear BOTH stores: the relational session/messages rows AND the LangGraph
+    # checkpoint thread (where the agent's real history lives). Clearing only
+    # the former leaves a poisoned thread that keeps replaying.
     await request.app.state.conversations.reset(req.session_id)
+    await request.app.state.orchestrator.clear_session(req.session_id)
     return {"ok": True}

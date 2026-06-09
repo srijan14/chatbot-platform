@@ -7,6 +7,7 @@ Skills are opt-in via `skills.enabled` in the bot YAML — the platform makes
 no assumption about which skills any given bot wants. This keeps clarification,
 tool_call, RAG, TAG, etc. on the same footing.
 """
+import logging
 import os
 
 from src.chatbot.core.bot_config_store import (
@@ -20,9 +21,15 @@ from src.chatbot.skills.clarification_skill import ClarificationSkill
 from src.chatbot.skills.rag_skill import RagSkill
 from src.chatbot.skills.tool_call_skill import ToolCallSkill
 
+_log = logging.getLogger("chatbot.router")
+
 
 class BotRouter:
-    def __init__(self):
+    def __init__(self, rag_engine=None):
+        # `rag_engine` is the in-process RagEngine (rag_engine.RagEngine), built
+        # once in the app lifespan and shared across all bots. Optional so tests
+        # that don't exercise RAG can construct a bare router.
+        self._rag_engine = rag_engine
         self._configs: dict[str, BotConfig] = {}
         self._skills: dict[str, list[Skill]] = {}
 
@@ -58,24 +65,30 @@ class BotRouter:
             skills.append(ToolCallSkill(client, tool_allowlist=cfg.tool_allowlist))
 
         if "rag" in cfg.enabled_skills:
-            if not cfg.rag.url:
+            # Config error (developer mistake) — fail loud.
+            if not cfg.rag.collection:
                 raise RuntimeError(
-                    f"Bot '{bot_id}' has rag in enabled_skills but no "
-                    f"`rag.mcp_server.url` configured."
+                    f"Bot '{bot_id}' rag requires `rag.collection`."
                 )
-            if not cfg.rag.default_collection:
-                raise RuntimeError(
-                    f"Bot '{bot_id}' rag requires `rag.default_collection`."
+            # Infra unavailable (e.g. RAG engine failed to build at boot) —
+            # degrade gracefully: keep tool_call/clarification working, just
+            # don't offer RAG, rather than bricking the whole bot.
+            if self._rag_engine is None:
+                _log.warning(
+                    "Bot '%s' enables rag but no rag_engine is available; "
+                    "skipping the RAG skill (other skills still load).", bot_id,
                 )
-            rag_client = MCPClient(cfg.rag.url)
-            skills.append(
-                RagSkill(
-                    rag_client,
-                    default_collection=cfg.rag.default_collection,
-                    top_k=cfg.rag.top_k,
-                    search_instructions=cfg.rag.search_instructions,
+            else:
+                # tenant == bot_id: each bot is isolated to {bot_id}__{collection}.
+                skills.append(
+                    RagSkill(
+                        self._rag_engine,
+                        tenant_id=bot_id,
+                        collection=cfg.rag.collection,
+                        top_k=cfg.rag.top_k,
+                        search_instructions=cfg.rag.search_instructions,
+                    )
                 )
-            )
         if "tag" in cfg.enabled_skills:
             if cfg.tag is None:
                 raise RuntimeError(

@@ -1,11 +1,22 @@
 # chatbot-platform
 
-A generalized chatbot platform — first vertical slice. The POC implements the
+A generalized chatbot platform. The first vertical slice implemented the
 **Tool Call Skill → Tool Engine → Internal APIs** path end-to-end ("Bot 4:
-Transactional") for a **telecom customer support** demo. Other skills (RAG,
-TAG/SQL, Web Scrape) have stub slots ready.
+Transactional") for a **telecom customer support** demo. Since then two more
+skills have come online:
 
-LLM provider: **Azure OpenAI** (gpt-4o or compatible deployment).
+- **RAG** — an **in-process** knowledge base. The chatbot imports the
+  `rag_engine` library directly (no separate services): it indexes each bot's
+  documents into its own vector-DB collection and retrieves with citations at
+  query time. The telecom bot uses it for policy / FAQ answers. See
+  [RAG knowledge-base demo](#rag-knowledge-base-demo).
+- **TAG / SQL** — NL→SQL over an analytics warehouse, powering the **BI
+  Assistant** bot (`configs/bots/bi_assistant.yaml`).
+
+Web Scrape remains a designed-but-unbuilt slot (it plugs into the RAG engine as
+another connector).
+
+LLM provider: **Azure OpenAI** (gpt-4o / o-series or compatible deployment).
 
 The user types a question, the model decides which telecom MCP tools to call
 with what arguments, those calls happen, and the model writes a final answer.
@@ -13,13 +24,14 @@ The structure stays generalized so new skills slot in without touching the core.
 
 ## Architecture
 
-Three local processes:
+Three local processes. RAG runs **in-process** inside `chatbot` (it imports the
+`rag_engine` library), so there are no separate RAG services.
 
 | Process | Port | Role |
 |---|---|---|
 | `telecom_api` | 8001 | Mock internal telecom REST API. SQLite-backed. |
 | `mcp_telecom` | 8765 | MCP server (FastMCP, Streamable HTTP). Wraps the REST API as 14 MCP tools. |
-| `chatbot`     | 8000 | FastAPI chatbot service. `/chat` REST endpoint, web UI, Azure OpenAI tool-use loop, MCP client. |
+| `chatbot`     | 8000 | FastAPI chatbot service. `/chat` REST endpoint, web UI, Azure OpenAI tool-use loop, MCP client (Tool Call), and the in-process RAG engine (Chroma + Azure embeddings). |
 
 ## Prerequisites
 
@@ -43,8 +55,14 @@ Three local processes:
 ## Quick start
 
 ```bash
-# 1. Install — root chatbot + both services + dev deps
-make install                              # creates .venv, installs chatbot, telecom-api, mcp-telecom
+# 0. Activate your Python 3.11 environment FIRST, then run make from it.
+#    pyenv:  pyenv activate env_311
+#    venv:   python -m venv .venv && . .venv/bin/activate
+#    (venv users who prefer make to activate for them can instead pass
+#     ACTIVATE='. .venv/bin/activate' to any target, e.g. `make run ACTIVATE=...`.)
+
+# 1. Install — platform + all services + dev deps into the active env
+make install
 
 # 2. Configure credentials
 cp .env.example .env
@@ -58,10 +76,11 @@ cp .env.example .env
 # 4. Seed SQLite with 5 demo customers
 make seed
 
-# 5. Run the three services. Easiest: honcho (one terminal)
-make run                                  # uses Procfile
+# 5. Run the services. Easiest: honcho (one terminal) — reads the Procfile
+make run                                  # starts telecom_api, mcp_telecom, chatbot
+                                          # (RAG runs inside chatbot — no extra process)
 
-# Or, in three separate terminals:
+# Or, in separate terminals:
 make telecom_api
 make mcp_telecom
 make chatbot
@@ -91,6 +110,53 @@ Other prompts that exercise clarification:
 
 The web UI has a customer-picker dropdown — switch identity without re-seeding.
 
+## RAG knowledge-base demo
+
+The telecom bot also answers **policy / FAQ** questions from a document corpus
+via the RAG skill — no new bot needed, it's already enabled in
+`configs/bots/telecom_support.yaml` (`skills.enabled: [tool_call, clarification, rag]`).
+RAG runs **in-process**: `RagSkill` calls the `rag_engine` library directly
+inside the chatbot — no separate services.
+
+**What's in the box:**
+- Corpus: `data/rag_corpus/telecom_policies/*.md` (cancellation, fair-usage,
+  KYC/activation, refunds/billing, roaming).
+- Each bot is its own tenant: the physical Chroma collection is
+  `{bot_id}__{collection}` → here `telecom_support__telecom_policies`.
+- The collection + its sources are declared in the bot YAML's `rag:` block.
+  On chatbot startup the platform ensures the collection exists and ingests
+  those sources (idempotent — dedupe skips unchanged files).
+
+**Prerequisite:** an Azure embedding deployment. Set
+`AZURE_OPENAI_EMBEDDING_DEPLOYMENT` in `.env` to an Azure deployment of
+`text-embedding-3-small` (1536 dims — the collection pins the dimensions).
+
+```bash
+# 1. Run the platform (RAG is inside the chatbot — no extra process).
+make run
+
+# 2. Index the corpus deterministically (optional — startup also enqueues it).
+#    Builds the same in-process engine and waits for the job to finish.
+make rag-ingest        # → python -m src.chatbot.cli.rag_ingest telecom_support
+#    Prints e.g.  job=... status=succeeded counts={'documents':5,'upserted':...}
+
+# 3. In the chat UI (:8000), ask a policy question — the bot routes to RAG:
+#   "What is the cancellation policy for postpaid plans?"
+#   → search_knowledge_base → grounded answer citing [1] (source_uri [heading])
+# vs. a record question, which routes to the telecom tools instead:
+#   "What plan am I on right now?"  → get_current_plan (tool_call skill)
+```
+
+The model decides per turn whether the question needs the knowledge base (RAG)
+or a customer-specific tool — the routing hints live in the bot YAML's
+`rag.search_instructions`. Citations render as `[N] (source_uri [heading])`;
+the `[heading]` comes from the markdown header chunker, which the engine selects
+automatically for `.md` sources.
+
+**Adding RAG to another bot** is config-only: add a `rag:` block (collection +
+sources) to its YAML and put `rag` in `skills.enabled`. It gets its own isolated
+collection automatically.
+
 ## Verifying without the UI
 
 ```bash
@@ -112,11 +178,16 @@ tail -f logs/turns.jsonl | jq .
 ## Tests
 
 ```bash
+# With your env active (pyenv activate env_311 / . .venv/bin/activate):
+
 # Unit + REST API (no LLM, no MCP server needed)
-.venv/bin/pytest tests/test_telecom_api.py tests/test_tool_translator.py -v
+pytest tests/test_telecom_api.py tests/test_tool_translator.py -v
 
 # MCP server integration (spawns subprocesses; opt-in)
-RUN_INTEGRATION=1 .venv/bin/pytest tests/test_mcp_tools.py -v
+RUN_INTEGRATION=1 pytest tests/test_mcp_tools.py -v
+
+# Everything
+make test
 ```
 
 ## Layout
@@ -171,5 +242,8 @@ on the next user turn.
 
 ## Out of scope (POC)
 
-Real auth (customer_id flows in cleartext), multi-tenancy, response streaming, RAG/TAG/Web-Scrape
-skills (slots only), alembic migrations (`create_all` on startup), Postgres (SQLite only).
+Real auth (customer_id flows in cleartext), response streaming, the Web-Scrape
+skill (designed only — plugs into the RAG engine as another connector), alembic
+migrations (`create_all` on startup), Postgres (SQLite only). RAG is multi-tenant
+at the engine level (per-tenant collections + metadata filter); the chatbot
+front door is still single-tenant.
