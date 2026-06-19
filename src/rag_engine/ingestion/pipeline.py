@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from rag_engine.chunking.base import Chunker
 from rag_engine.connectors.base import SourceConnector
 from rag_engine.embeddings.base import Embedder
-from rag_engine.ingestion.dedupe import decide
+from rag_engine.ingestion.dedupe import DedupeDecision, decide
 from rag_engine.jobs.store import DocumentsRepo
 from rag_engine.models import CollectionSpec
 from rag_engine.vector_store.base import UpsertItem, VectorStore
@@ -65,7 +65,6 @@ class IngestionPipeline:
         self, connector: SourceConnector, spec: CollectionSpec
     ) -> IngestionCounts:
         counts = IngestionCounts()
-        physical = spec.physical_name()
 
         async for ref in connector.list_documents():
             try:
@@ -76,68 +75,93 @@ class IngestionPipeline:
                 log.exception("connector.fetch failed for %s", ref.source_uri)
                 continue
 
-            counts.documents += 1
-
-            # Dedupe — open a session for the read; the write happens after
-            # successful upsert below (so a failed embed doesn't update the hash).
-            session_ctx = await self.docs.session()
-            async with session_ctx as session:
-                decision = await decide(session, doc)
-
-            if not decision.should_index:
-                counts.skipped += 1
-                continue
-
-            chunks = await self.chunker.chunk(doc)
-            counts.chunks += len(chunks)
-
-            if not chunks:
-                # Empty doc — record it so we don't keep re-processing
-                await self.docs.upsert(
-                    doc_id=doc.doc_id, tenant_id=spec.tenant_id, collection=spec.name,
-                    source_uri=doc.source_uri, text=doc.content,
-                    chunk_count=0, metadata=doc.metadata,
-                )
-                continue
-
-            try:
-                embeddings = await self.embedder.embed_documents([c.text for c in chunks])
-                counts.embedded += len(embeddings)
-            except Exception as e:
-                counts.errors += 1
-                counts.error_messages.append(f"embed {doc.source_uri}: {e}")
-                log.exception("embedder failed for %s", doc.source_uri)
-                continue
-
-            # If this doc previously had chunks, drop them first. Combined
-            # with deterministic `chunk_id`s this is safe under crashes.
-            if decision.is_changed:
-                await self.vstore.delete_by_filter(
-                    physical, where={"doc_id": doc.doc_id}
-                )
-
-            items = [
-                UpsertItem(
-                    id=c.chunk_id, embedding=e, document=c.text, metadata=c.metadata
-                )
-                for c, e in zip(chunks, embeddings)
-            ]
-            try:
-                await self.vstore.upsert(physical, items)
-                counts.upserted += len(items)
-            except Exception as e:
-                counts.errors += 1
-                counts.error_messages.append(f"upsert {doc.source_uri}: {e}")
-                log.exception("vector_store.upsert failed for %s", doc.source_uri)
-                continue
-
-            await self.docs.upsert(
-                doc_id=doc.doc_id,
-                tenant_id=spec.tenant_id,
-                collection=spec.name,
-                source_uri=doc.source_uri,
-                text=doc.content,
-                chunk_count=len(chunks),
-                metadata=doc.metadata,
-            )
+            await self._index_document(doc, spec, counts)
         return counts
+
+    async def ingest_one(
+        self, doc: Document, spec: CollectionSpec
+    ) -> tuple[IngestionCounts, DedupeDecision | None]:
+        """Index a single, already-fetched Document (synchronous CRUD path).
+
+        Shares the exact new/changed/unchanged logic the batch `run` uses, so
+        an API-driven single-document upsert behaves identically to a connector
+        sync. Returns the counts plus the dedupe decision so callers can report
+        created vs. updated vs. unchanged.
+        """
+        counts = IngestionCounts()
+        decision = await self._index_document(doc, spec, counts)
+        return counts, decision
+
+    async def _index_document(
+        self, doc: Document, spec: CollectionSpec, counts: IngestionCounts
+    ) -> DedupeDecision | None:
+        """Dedupe → chunk → embed → (delete-if-changed) → upsert one document.
+
+        Mutates `counts` in place and returns the DedupeDecision (or None if the
+        document errored before it could be indexed).
+        """
+        physical = spec.physical_name()
+        counts.documents += 1
+
+        # Dedupe — open a session for the read; the write happens after
+        # successful upsert below (so a failed embed doesn't update the hash).
+        session_ctx = await self.docs.session()
+        async with session_ctx as session:
+            decision = await decide(session, doc)
+
+        if not decision.should_index:
+            counts.skipped += 1
+            return decision
+
+        chunks = await self.chunker.chunk(doc)
+        counts.chunks += len(chunks)
+
+        if not chunks:
+            # Empty doc — record it so we don't keep re-processing. If it
+            # previously had chunks (now emptied), drop the stale ones first.
+            if decision.is_changed:
+                await self.vstore.delete_by_filter(physical, where={"doc_id": doc.doc_id})
+            await self.docs.upsert(
+                doc_id=doc.doc_id, tenant_id=spec.tenant_id, collection=spec.name,
+                source_uri=doc.source_uri, text=doc.content,
+                chunk_count=0, metadata=doc.metadata,
+            )
+            return decision
+
+        try:
+            embeddings = await self.embedder.embed_documents([c.text for c in chunks])
+            counts.embedded += len(embeddings)
+        except Exception as e:
+            counts.errors += 1
+            counts.error_messages.append(f"embed {doc.source_uri}: {e}")
+            log.exception("embedder failed for %s", doc.source_uri)
+            return decision
+
+        # If this doc previously had chunks, drop them first. Combined
+        # with deterministic `chunk_id`s this is safe under crashes.
+        if decision.is_changed:
+            await self.vstore.delete_by_filter(physical, where={"doc_id": doc.doc_id})
+
+        items = [
+            UpsertItem(id=c.chunk_id, embedding=e, document=c.text, metadata=c.metadata)
+            for c, e in zip(chunks, embeddings)
+        ]
+        try:
+            await self.vstore.upsert(physical, items)
+            counts.upserted += len(items)
+        except Exception as e:
+            counts.errors += 1
+            counts.error_messages.append(f"upsert {doc.source_uri}: {e}")
+            log.exception("vector_store.upsert failed for %s", doc.source_uri)
+            return decision
+
+        await self.docs.upsert(
+            doc_id=doc.doc_id,
+            tenant_id=spec.tenant_id,
+            collection=spec.name,
+            source_uri=doc.source_uri,
+            text=doc.content,
+            chunk_count=len(chunks),
+            metadata=doc.metadata,
+        )
+        return decision

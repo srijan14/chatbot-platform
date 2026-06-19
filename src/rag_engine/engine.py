@@ -16,11 +16,18 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 from rag_engine.chunking.base import Chunker
 from rag_engine.connectors.registry import ConnectorRegistry, default_registry
 from rag_engine.embeddings.base import Embedder
+from rag_engine.ingestion.loaders import mime_for_path
 from rag_engine.ingestion.pipeline import IngestionPipeline
 from rag_engine.jobs.queue import JobQueue
 from rag_engine.jobs.runner import JobRunner
 from rag_engine.jobs.store import DocumentsRepo, JobsRepo
-from rag_engine.models import CollectionSpec, IngestionJob, SearchResult
+from rag_engine.models import (
+    CollectionSpec,
+    Document,
+    IngestionJob,
+    SearchResult,
+    doc_id_for,
+)
 from rag_engine.retrieval.reranker import Reranker
 from rag_engine.retrieval.retriever import Retriever
 from rag_engine.scheduler.runs import ConnectorRunsRepo
@@ -228,6 +235,81 @@ class RagEngine:
 
     async def job_status(self, job_id: str) -> IngestionJob | None:
         return await self.jobs.get(job_id)
+
+    # --- single-document CRUD (synchronous; for API-driven management) ------
+    async def upsert_document(
+        self,
+        tenant_id: str,
+        collection: str,
+        source_uri: str,
+        content: str,
+        mime_type: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Add or update one document inline (no connector, no job queue).
+
+        `source_uri` is the caller's stable identifier — re-upserting the same
+        `source_uri` updates the document in place (old chunks dropped first).
+        Returns a status (`created` / `updated` / `unchanged`) plus counts.
+        """
+        spec = await self._resolve_or_raise(tenant_id, collection)
+        doc = Document(
+            doc_id=doc_id_for(source_uri),
+            source_uri=source_uri,
+            content=content,
+            mime_type=mime_type or mime_for_path(source_uri),
+            tenant_id=tenant_id,
+            collection=collection,
+            metadata=metadata or {},
+        )
+        counts, decision = await self.pipeline.ingest_one(doc, spec)
+        if decision is None:
+            status = "error"
+        elif decision.is_new:
+            status = "created"
+        elif decision.is_changed:
+            status = "updated"
+        else:
+            status = "unchanged"
+        return {
+            "doc_id": doc.doc_id,
+            "source_uri": source_uri,
+            "status": status,
+            "counts": counts.asdict(),
+            "errors": counts.error_messages,
+        }
+
+    async def delete_document(
+        self,
+        tenant_id: str,
+        collection: str,
+        *,
+        source_uri: str | None = None,
+        doc_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Remove one document: its chunks from the vector store + its
+        bookkeeping row. Identify it by `source_uri` (preferred) or `doc_id`.
+        """
+        if not source_uri and not doc_id:
+            raise ValueError("delete_document requires source_uri or doc_id")
+        resolved_doc_id = doc_id or doc_id_for(source_uri)  # type: ignore[arg-type]
+        spec = await self._resolve_or_raise(tenant_id, collection)
+        chunks_removed = await self.vstore.delete_by_filter(
+            spec.physical_name(), where={"doc_id": resolved_doc_id}
+        )
+        existed = await self._documents.delete(resolved_doc_id)
+        return {
+            "doc_id": resolved_doc_id,
+            "source_uri": source_uri,
+            "deleted": existed or chunks_removed > 0,
+            "chunks_removed": chunks_removed,
+        }
+
+    async def list_documents(
+        self, tenant_id: str, collection: str
+    ) -> list[dict[str, Any]]:
+        """List the documents ingested into a tenant's collection."""
+        return await self._documents.list_for(tenant_id, collection)
 
     # --- retrieval ------------------------------------------------------
     async def search(

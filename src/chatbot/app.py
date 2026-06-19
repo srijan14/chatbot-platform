@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles  # noqa: E402
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver  # noqa: E402
 
 from src.chatbot.api import chat as chat_api  # noqa: E402
+from src.chatbot.api import documents as documents_api  # noqa: E402
 from src.chatbot.core.conversation_manager import ConversationManager  # noqa: E402
 from src.chatbot.core.langgraph_orchestrator import LangGraphOrchestrator  # noqa: E402
 from src.chatbot.core.rag_runtime import bootstrap_bot_rag, build_rag_engine  # noqa: E402
@@ -184,3 +185,4 @@ def index():
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 app.include_router(chat_api.router)
+app.include_router(documents_api.router)

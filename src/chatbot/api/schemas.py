@@ -55,6 +55,62 @@ class ChatResponse(BaseModel):
     clarification: Optional[ClarificationOut] = None
 
 
+class DocumentUpsertRequest(BaseModel):
+    """Add or update one knowledge-base document for a bot."""
+    id: str = Field(
+        ...,
+        min_length=1,
+        description="Stable, caller-chosen document identifier (also stored as "
+        "the source URI). Re-using it updates the existing document in place. "
+        "Use a URL-safe string, e.g. 'refund-policy' or 'policies/roaming.md'.",
+    )
+    content: str = Field(..., min_length=1, description="The full document text.")
+    mime_type: Optional[str] = Field(
+        default=None,
+        description="Optional MIME type. Defaults to inference from the id's "
+        "extension ('.md' → markdown chunking with headings; otherwise plain).",
+    )
+    metadata: dict = Field(
+        default_factory=dict,
+        description="Optional metadata stored alongside the document's chunks.",
+    )
+
+
+class DocumentUpsertResponse(BaseModel):
+    bot_id: str
+    collection: str
+    document_id: str          # the caller's `id` / source URI
+    doc_id: str               # internal deterministic id
+    status: str               # "created" | "updated" | "unchanged"
+    chunks: int
+    embedded: int
+    upserted: int
+
+
+class DocumentInfo(BaseModel):
+    document_id: str          # source URI (the caller's `id`)
+    doc_id: str
+    chunk_count: int
+    ingested_at: Optional[str] = None
+    metadata: dict = Field(default_factory=dict)
+
+
+class DocumentListResponse(BaseModel):
+    bot_id: str
+    collection: str
+    count: int
+    documents: list[DocumentInfo] = Field(default_factory=list)
+
+
+class DocumentDeleteResponse(BaseModel):
+    bot_id: str
+    collection: str
+    document_id: str
+    doc_id: str
+    deleted: bool
+    chunks_removed: int
+
+
 class HistoryMessage(BaseModel):
     role: str  # "user" | "assistant"
     text: str

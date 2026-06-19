@@ -155,6 +155,46 @@ class DocumentsRepo:
                 )
             await s.commit()
 
+    async def delete(self, doc_id: str) -> bool:
+        """Remove the bookkeeping row for a document. Returns False if absent.
+
+        The vector chunks are deleted separately (Chroma owns them); this only
+        clears the dedupe/list row so the document no longer appears as ingested.
+        """
+        async with self._sm() as s:
+            row = await s.get(DocumentRow, doc_id)
+            if row is None:
+                return False
+            await s.delete(row)
+            await s.commit()
+            return True
+
+    async def list_for(
+        self, tenant_id: str, collection: str
+    ) -> list[dict[str, Any]]:
+        """List ingested documents for a tenant's collection (newest first)."""
+        async with self._sm() as s:
+            rows = (
+                await s.execute(
+                    select(DocumentRow)
+                    .where(
+                        DocumentRow.tenant_id == tenant_id,
+                        DocumentRow.collection == collection,
+                    )
+                    .order_by(DocumentRow.ingested_at.desc())
+                )
+            ).scalars().all()
+            return [
+                {
+                    "doc_id": r.doc_id,
+                    "source_uri": r.source_uri,
+                    "chunk_count": r.chunk_count,
+                    "ingested_at": r.ingested_at,
+                    "metadata": json.loads(r.metadata_json or "{}"),
+                }
+                for r in rows
+            ]
+
     async def session(self) -> AsyncSession:
         """Escape hatch for callers that need to run a transaction across
         repos (e.g., dedupe.decide + upsert)."""
