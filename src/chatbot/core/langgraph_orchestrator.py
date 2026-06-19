@@ -21,6 +21,7 @@ Why this shape:
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
@@ -76,6 +77,11 @@ class LangGraphOrchestrator:
         self._budget_daily_cap = budget_daily_cap
         # bot_id → compiled graph. Built lazily on first turn for that bot.
         self._graphs: dict[str, Any] = {}
+        # session_id → lock. Serializes turns on the same conversation thread.
+        # Concurrent ainvoke() on one thread_id races the checkpointer and can
+        # leave an orphaned tool_call (assistant tool_calls with no tool reply),
+        # which then 400s every later turn. One lock per session prevents that.
+        self._session_locks: dict[str, asyncio.Lock] = {}
 
     @property
     def budget_store(self) -> dict[str, int]:
@@ -178,47 +184,89 @@ class LangGraphOrchestrator:
             "recursion_limit": max(bot_config.max_tool_iterations * 4, 25),
         }
 
-        # Snapshot pre-turn state so we can slice the messages added this turn.
-        pre_state = await graph.aget_state(config)
-        pre_message_count = len(pre_state.values.get("messages", [])) if pre_state.values else 0
-        pre_prompt_tokens = int(pre_state.values.get("prompt_tokens_used", 0) or 0) if pre_state.values else 0
-        pre_completion_tokens = int(pre_state.values.get("completion_tokens_used", 0) or 0) if pre_state.values else 0
-        pre_cached_tokens = int(pre_state.values.get("cached_tokens_used", 0) or 0) if pre_state.values else 0
-
-        if session.awaiting_clarification:
-            _log.info("[orch] RESUME-FROM-INTERRUPT trace=%s", trace_id)
-            graph_input: Any = Command(resume=user_message)
-        else:
-            graph_input = {
-                "messages": [HumanMessage(content=user_message)],
-                "bot_id": bot_config.bot_id,
-                "customer_id": session.customer_id,
-            }
-
         capped = False
-        try:
-            result = await graph.ainvoke(graph_input, config=config)
-        except Exception as exc:
-            # Surface the exception type AND message in the response so the
-            # bot can see what actually broke without having to dig through
-            # the structured log. Full traceback still lives in the log via
-            # _log.exception().
-            _log.exception("[orch] GRAPH-FAILED trace=%s", trace_id)
-            latency_ms = int((time.monotonic() - t_start) * 1000)
-            err_text = f"Sorry, I hit an internal error: {type(exc).__name__}: {exc}"
-            return TurnResult(
-                trace_id=trace_id,
-                text=err_text,
-                iterations=0,
-                latency_ms=latency_ms,
-                capped=False,
-                signals=[],
-                new_messages=[],
-                log_payload=self._build_log_payload(
-                    trace_id, session, bot_config, latency_ms,
-                    0, 0, 0, 0, False, False, [],
-                ),
+        # Serialize turns on this conversation thread. Concurrent ainvoke() on
+        # one thread_id races the checkpointer and is a prime way to orphan a
+        # tool_call; the lock makes turns sequential per session.
+        lock = self._session_locks.setdefault(session.session_id, asyncio.Lock())
+        async with lock:
+            # Snapshot pre-turn state so we can slice the messages added this turn.
+            pre_state = await graph.aget_state(config)
+            pre_messages: list[BaseMessage] = (
+                list(pre_state.values.get("messages", []) or []) if pre_state.values else []
             )
+            pre_message_count = len(pre_messages)
+            pre_prompt_tokens = int(pre_state.values.get("prompt_tokens_used", 0) or 0) if pre_state.values else 0
+            pre_completion_tokens = int(pre_state.values.get("completion_tokens_used", 0) or 0) if pre_state.values else 0
+            pre_cached_tokens = int(pre_state.values.get("cached_tokens_used", 0) or 0) if pre_state.values else 0
+
+            if session.awaiting_clarification:
+                _log.info("[orch] RESUME-FROM-INTERRUPT trace=%s", trace_id)
+                graph_input: Any = Command(resume=user_message)
+            else:
+                # Heal a poisoned thread: if a prior turn left an assistant
+                # message with tool_calls but no matching tool replies (crash,
+                # an unresumed interrupt, or a concurrent turn), replaying it
+                # 400s on every later turn. Close the open tool_calls with
+                # synthetic results before appending the new user message.
+                repair = _dangling_tool_messages(pre_messages)
+                if repair:
+                    await graph.aupdate_state(config, {"messages": repair})
+                    pre_message_count += len(repair)
+                    _log.warning(
+                        "[orch] THREAD-REPAIRED trace=%s closed=%d open tool_call(s)",
+                        trace_id, len(repair),
+                    )
+                graph_input = {
+                    "messages": [HumanMessage(content=user_message)],
+                    "bot_id": bot_config.bot_id,
+                    "customer_id": session.customer_id,
+                }
+
+            try:
+                result = await graph.ainvoke(graph_input, config=config)
+            except Exception as exc:
+                # Surface the exception type AND message in the response so the
+                # bot can see what actually broke without having to dig through
+                # the structured log. Full traceback still lives in the log via
+                # _log.exception().
+                _log.exception("[orch] GRAPH-FAILED trace=%s", trace_id)
+                latency_ms = int((time.monotonic() - t_start) * 1000)
+                if _is_orphaned_tool_calls_error(exc):
+                    # Last-resort self-heal for corruption the pre-invoke repair
+                    # couldn't fix (e.g. mid-history). Wipe the thread so the
+                    # next message starts clean instead of failing forever.
+                    _log.warning(
+                        "[orch] THREAD-POISONED trace=%s → clearing session=%s",
+                        trace_id, session.session_id,
+                    )
+                    try:
+                        await self.clear_session(session.session_id)
+                    except Exception:
+                        _log.exception(
+                            "[orch] clear-after-poison failed session=%s",
+                            session.session_id,
+                        )
+                    err_text = (
+                        "Sorry — our previous exchange got into a bad state, so "
+                        "I've reset this conversation. Please send your message "
+                        "again."
+                    )
+                else:
+                    err_text = f"Sorry, I hit an internal error: {type(exc).__name__}: {exc}"
+                return TurnResult(
+                    trace_id=trace_id,
+                    text=err_text,
+                    iterations=0,
+                    latency_ms=latency_ms,
+                    capped=False,
+                    signals=[],
+                    new_messages=[],
+                    log_payload=self._build_log_payload(
+                        trace_id, session, bot_config, latency_ms,
+                        0, 0, 0, 0, False, False, [],
+                    ),
+                )
 
         latency_ms = int((time.monotonic() - t_start) * 1000)
 
@@ -421,3 +469,56 @@ def _last_assistant_text(messages: list[BaseMessage]) -> str:
                 if joined:
                     return joined
     return ""
+
+
+def _dangling_tool_messages(messages: list[BaseMessage]) -> list[ToolMessage]:
+    """Synthetic tool replies for an open assistant tool_calls turn at the tail.
+
+    OpenAI rejects any history where an assistant message with `tool_calls`
+    isn't followed by a tool message per `tool_call_id`. A turn that died after
+    the model emitted tool calls (crash, unresumed interrupt, concurrent turn)
+    leaves exactly that. We find the last assistant message bearing tool_calls
+    and return a placeholder ToolMessage for each id that has no reply, so the
+    caller can append them and make the thread valid again.
+    """
+    if not messages:
+        return []
+    idx: int | None = None
+    for i in range(len(messages) - 1, -1, -1):
+        m = messages[i]
+        if isinstance(m, AIMessage) and m.tool_calls:
+            idx = i
+            break
+        if isinstance(m, HumanMessage):
+            # Hit a fresh user turn before any open tool-call assistant message;
+            # no tail orphan to repair here.
+            return []
+    if idx is None:
+        return []
+    answered = {
+        m.tool_call_id
+        for m in messages[idx + 1:]
+        if isinstance(m, ToolMessage) and m.tool_call_id
+    }
+    out: list[ToolMessage] = []
+    for tc in messages[idx].tool_calls:
+        tcid = tc.get("id")
+        if tcid and tcid not in answered:
+            out.append(
+                ToolMessage(
+                    content="(no response — previous turn did not complete)",
+                    tool_call_id=tcid,
+                    name=tc.get("name", "") or "",
+                    status="error",
+                )
+            )
+    return out
+
+
+def _is_orphaned_tool_calls_error(exc: Exception) -> bool:
+    """True if `exc` is the provider 400 for an unanswered assistant tool_call."""
+    msg = str(exc)
+    return (
+        "must be followed by tool messages" in msg
+        or "did not have response messages" in msg
+    )
