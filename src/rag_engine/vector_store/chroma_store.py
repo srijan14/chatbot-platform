@@ -43,8 +43,14 @@ class ChromaVectorStore(VectorStore):
 
     async def list_collections(self) -> list[str]:
         cols = await asyncio.to_thread(self._client.list_collections)
-        # chromadb >= 0.5 returns Collection objects (or names in newer versions).
-        return [c.name if hasattr(c, "name") else str(c) for c in cols]
+        # Version-robust: chromadb 0.5 returns Collection objects (`.name`),
+        # while 0.6+ returns the names directly as a str subclass whose `.name`
+        # accessor *raises* NotImplementedError. Check for str FIRST so the
+        # 0.6 shim is coerced via str(), and fall back to `.name` for 0.5.
+        out: list[str] = []
+        for c in cols:
+            out.append(str(c) if isinstance(c, str) else c.name)
+        return out
 
     async def drop_collection(self, name: str) -> None:
         await asyncio.to_thread(self._client.delete_collection, name=name)

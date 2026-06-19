@@ -1,4 +1,5 @@
 """Chatbot service entry point. FastAPI app exposing /chat + the demo web page."""
+import asyncio
 import logging
 import os
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -81,10 +82,18 @@ async def lifespan(app: FastAPI):
             stack.push_async_callback(rag_engine.stop)
             stack.push_async_callback(rag_db.dispose)
             app.state.rag_engine = rag_engine
-        except Exception as exc:
+        except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
+            # Genuine shutdown/cancellation signals must propagate.
+            raise
+        except BaseException as exc:
+            # Catch BaseException, not just Exception: native deps can raise
+            # outside the Exception hierarchy — notably chromadb's Rust core,
+            # which raises pyo3 PanicException (a BaseException). RAG must
+            # degrade gracefully (rag bots simply lose RAG) and never take the
+            # whole chatbot down.
             startup_log.warning(
-                "RAG engine init failed (%s: %s); rag-enabled bots will error "
-                "until this is fixed.", type(exc).__name__, exc,
+                "RAG engine init failed (%s: %s); rag-enabled bots will run "
+                "without RAG until this is fixed.", type(exc).__name__, exc,
             )
             rag_engine = None
             app.state.rag_engine = None
