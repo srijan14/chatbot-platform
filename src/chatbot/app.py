@@ -86,9 +86,9 @@ async def lifespan(app: FastAPI):
             # Genuine shutdown/cancellation signals must propagate.
             raise
         except BaseException as exc:
-            # Catch BaseException, not just Exception: native deps can raise
-            # outside the Exception hierarchy — notably chromadb's Rust core,
-            # which raises pyo3 PanicException (a BaseException). RAG must
+            # Catch BaseException, not just Exception: native deps (e.g. the
+            # vector store's gRPC/native layer, or an unreachable Milvus
+            # cluster) can raise outside the Exception hierarchy. RAG must
             # degrade gracefully (rag bots simply lose RAG) and never take the
             # whole chatbot down.
             startup_log.warning(

@@ -15,10 +15,10 @@ dependencies = [
     "python-dotenv>=1.0",
     "sqlalchemy[asyncio]>=2.0",
     "aiosqlite>=0.20",
-    # Pinned <1.0: the 1.x line ships a Rust core (chromadb_rust_bindings)
-    # whose SQLite path panics on some platforms ("range start index out of
-    # range for slice") and aborts startup. 0.x is the pure-Python client.
-    "chromadb>=0.5,<1.0",
+    # Milvus is the production vector backend. pymilvus bundles Milvus Lite
+    # (embedded, file-backed) for local/dev/tests; the same client talks to a
+    # real Milvus cluster in prod via MILVUS_URI.
+    "pymilvus>=2.4",
     "pypdf>=4.0",
     "apscheduler>=3.10",
     # LangGraph orchestration stack

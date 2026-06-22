@@ -1,7 +1,8 @@
 """VectorStore Protocol — the swap boundary for the storage backend.
 
-Today: ChromaVectorStore. Tomorrow: pgvector / Qdrant / Weaviate without
-touching any caller. The Protocol stays minimal: anything fancy (HNSW tuning,
+Default: MilvusVectorStore. Swapping to pgvector / Qdrant / Weaviate is a
+one-file change — no caller touches anything but this Protocol. It stays
+minimal: anything fancy (HNSW tuning,
 hybrid search) goes behind implementation-specific config, not into this API.
 """
 from __future__ import annotations

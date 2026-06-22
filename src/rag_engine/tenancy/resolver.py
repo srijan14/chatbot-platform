@@ -12,7 +12,7 @@ _SAFE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_\-]{0,62}$")
 
 
 def validate_identifier(s: str, label: str) -> None:
-    """Reject names that would land us in URL/SQL/Chroma escaping trouble."""
+    """Reject names that would land us in URL/SQL/Milvus escaping trouble."""
     if not s or not _SAFE.match(s):
         raise ValueError(
             f"invalid {label} {s!r}: must match {_SAFE.pattern}"

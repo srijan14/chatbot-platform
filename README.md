@@ -31,7 +31,7 @@ Three local processes. RAG runs **in-process** inside `chatbot` (it imports the
 |---|---|---|
 | `telecom_api` | 8001 | Mock internal telecom REST API. SQLite-backed. |
 | `mcp_telecom` | 8765 | MCP server (FastMCP, Streamable HTTP). Wraps the REST API as 14 MCP tools. |
-| `chatbot`     | 8000 | FastAPI chatbot service. `/chat` REST endpoint, web UI, Azure OpenAI tool-use loop, MCP client (Tool Call), and the in-process RAG engine (Chroma + Azure embeddings). |
+| `chatbot`     | 8000 | FastAPI chatbot service. `/chat` REST endpoint, web UI, Azure OpenAI tool-use loop, MCP client (Tool Call), and the in-process RAG engine (Milvus + Azure embeddings). |
 
 ## Prerequisites
 
@@ -121,7 +121,7 @@ inside the chatbot — no separate services.
 **What's in the box:**
 - Corpus: `data/rag_corpus/telecom_policies/*.md` (cancellation, fair-usage,
   KYC/activation, refunds/billing, roaming).
-- Each bot is its own tenant: the physical Chroma collection is
+- Each bot is its own tenant: the physical Milvus collection is
   `{bot_id}__{collection}` → here `telecom_support__telecom_policies`.
 - The collection + its sources are declared in the bot YAML's `rag:` block.
   On chatbot startup the platform ensures the collection exists and ingests
