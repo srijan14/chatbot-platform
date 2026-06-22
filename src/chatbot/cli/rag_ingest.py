@@ -57,7 +57,7 @@ async def _run(bot_id: str, wait: bool) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="rag-ingest", description=__doc__)
-    parser.add_argument("bot_id", help="Bot id whose sources to ingest, e.g. telecom_support")
+    parser.add_argument("bot_id", help="Bot id whose sources to ingest, e.g. am_marketplace")
     parser.add_argument(
         "--no-wait",
         dest="wait",

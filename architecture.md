@@ -1,5 +1,12 @@
 # Telecom Chatbot POC — Tool Call Skill via MCP
 
+> **Historical design note (superseded).** This captures the original telecom POC
+> that bootstrapped the platform's `tool_call` → MCP path. Those demo bots and
+> their services (`telecom_api`, `mcp_telecom`, `bi_warehouse`) have been removed.
+> The current live bot is **`am_marketplace`** (RAG); see [README](README.md) for
+> how to run the platform today. The telecom flow below remains only as a worked
+> example of the still-present `tool_call` skill.
+
 ## Context
 
 The repo (`/Users/srijansharma/Desktop/chatbot-platform/chatbot-platform/`) is empty — just a README. We're building the **first vertical slice** of the larger chatbot-platform architecture: a single bot ("Bot 4: Transactional") that demonstrates the **Tool Call Skill → Tool Engine → Internal APIs** path end-to-end.

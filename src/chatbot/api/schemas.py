@@ -6,9 +6,14 @@ from pydantic import BaseModel, Field
 
 class ChatRequest(BaseModel):
     session_id: str = Field(..., description="Stable session ID per browser tab / chat thread.")
-    customer_id: str = Field(..., description="Demo customer to authenticate as (CUST001..CUST005).")
+    customer_id: str = Field(
+        ...,
+        description="End-user identity for this session. Used for the per-user "
+        "daily token budget and for audit/turn-log attribution. Opaque to the "
+        "platform — any stable per-user string works.",
+    )
     message: str = Field(..., min_length=1)
-    bot_id: str = "telecom_support"
+    bot_id: str = "am_marketplace"
 
 
 class ToolCallTraceOut(BaseModel):

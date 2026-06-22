@@ -3,10 +3,16 @@ const els = {
   form: document.getElementById("composer"),
   input: document.getElementById("input"),
   send: document.getElementById("send"),
-  customer: document.getElementById("customer"),
+  userId: document.getElementById("userId"),
   reset: document.getElementById("reset"),
   status: document.getElementById("status"),
 };
+
+const ASSISTANT_NAME = "Assistant";
+// End-user identity sent as customer_id (platform field: per-user budget + audit).
+function currentUserId() {
+  return (els.userId.value || "").trim() || "guest";
+}
 
 // Persist session_id so reload survives a chatbot restart (matters for the
 // DB-backed history test). New tabs/windows start fresh because they share
@@ -23,8 +29,8 @@ let SESSION_ID = ensureSessionId();
 
 // Hydrate the chat with prior turns when the page (re)loads. The server returns
 // only user/assistant text bubbles — tool plumbing stays hidden. If the session
-// has a customer_id on the server, sync the dropdown to it so the next message
-// doesn't trigger a customer-switch wipe.
+// has a user id on the server, sync the input to it so the next message doesn't
+// trigger a user-switch wipe.
 async function loadHistory() {
   try {
     const r = await fetch(`/chat/history?session_id=${encodeURIComponent(SESSION_ID)}`);
@@ -32,8 +38,7 @@ async function loadHistory() {
     const data = await r.json();
     if (!data.messages || !data.messages.length) return;
     if (data.customer_id) {
-      const opt = els.customer.querySelector(`option[value="${data.customer_id}"]`);
-      if (opt) els.customer.value = data.customer_id;
+      els.userId.value = data.customer_id;
     }
     for (const m of data.messages) {
       addMessage(m.role, m.text);
@@ -55,7 +60,7 @@ function addMessage(role, text, trace, meta, opts = {}) {
   wrapper.className = `msg ${role}` + (opts.clarify ? " clarify" : "");
   const roleLabel = document.createElement("div");
   roleLabel.className = "role";
-  roleLabel.textContent = role === "user" ? "You" : "TelcoBot";
+  roleLabel.textContent = role === "user" ? "You" : ASSISTANT_NAME;
   const bubble = document.createElement("div");
   bubble.className = "bubble";
   bubble.textContent = text;
@@ -113,14 +118,14 @@ function setStatus(text, isError) {
 }
 
 async function send(message) {
-  const customerId = els.customer.value;
+  const customerId = currentUserId();
   els.send.disabled = true;
   els.input.disabled = true;
 
   addMessage("user", message);
   const thinking = document.createElement("div");
   thinking.className = "msg assistant";
-  thinking.innerHTML = '<div class="role">TelcoBot</div><div class="bubble"><span class="thinking">thinking</span></div>';
+  thinking.innerHTML = `<div class="role">${ASSISTANT_NAME}</div><div class="bubble"><span class="thinking">thinking</span></div>`;
   els.messages.appendChild(thinking);
   els.messages.scrollTop = els.messages.scrollHeight;
 
@@ -183,7 +188,7 @@ els.reset.addEventListener("click", async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         session_id: SESSION_ID,
-        customer_id: els.customer.value,
+        customer_id: currentUserId(),
         message: "(reset)",
       }),
     });
@@ -193,9 +198,9 @@ els.reset.addEventListener("click", async () => {
   SESSION_ID = ensureSessionId();
 });
 
-els.customer.addEventListener("change", () => {
+els.userId.addEventListener("change", () => {
   els.messages.innerHTML = "";
-  setStatus(`Customer switched to ${els.customer.value}. Session restarted.`);
+  setStatus(`User switched to ${currentUserId()}. Session restarted.`);
 });
 
 els.input.focus();

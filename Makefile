@@ -1,4 +1,4 @@
-.PHONY: install seed reset run telecom_api mcp_telecom chatbot test smoke clean rag-ingest bi-seed bi-reset notebook infra-up infra-down infra-reset infra-logs infra-ps
+.PHONY: install run chatbot test smoke clean rag-ingest infra-up infra-down infra-reset infra-logs infra-ps
 
 # ---------------------------------------------------------------------------
 # Environment activation
@@ -11,7 +11,7 @@
 #     make install
 #     make run
 #
-# make then finds honcho / uvicorn / telecom-seed on the active env's PATH.
+# make then finds honcho / uvicorn on the active env's PATH.
 #
 # If you instead use a local .venv and want make to activate it for you,
 # override ACTIVATE (on the command line or by editing the line below):
@@ -48,33 +48,15 @@ infra-logs:
 install:
 	$(ACTIVATE) && pip install --upgrade pip && \
 	pip install -e . && \
-	pip install -e services/telecom_api && \
-	pip install -e services/mcp_telecom && \
 	pip install -e ".[dev]"
 
-seed:
-	$(ACTIVATE) && telecom-seed
-
-reset:
-	$(ACTIVATE) && telecom-seed --reset
-
-bi-seed:
-	$(ACTIVATE) && bi-seed
-
-bi-reset:
-	$(ACTIVATE) && bi-seed --reset
-
-telecom_api:
-	$(ACTIVATE) && TELECOM_API_RELOAD=1 telecom-api
-
-mcp_telecom:
-	$(ACTIVATE) && mcp-telecom
-
 # Index a bot's declared RAG sources into its (in-process) collection.
-# No services needed — builds the same in-process RagEngine the chatbot uses.
-# Pre-req: AZURE_OPENAI_EMBEDDING_DEPLOYMENT set in .env.
+# Builds the same in-process RagEngine the chatbot uses — no extra services.
+# Pre-req: AZURE_OPENAI_EMBEDDING_DEPLOYMENT set in .env, and `make infra-up`.
+# Override the bot with: make rag-ingest BOT=<bot_id>
+BOT ?= am_marketplace
 rag-ingest:
-	$(ACTIVATE) && python -m src.chatbot.cli.rag_ingest telecom_support
+	$(ACTIVATE) && python -m src.chatbot.cli.rag_ingest $(BOT)
 
 chatbot:
 	$(ACTIVATE) && uvicorn src.chatbot.app:app --port 8000 --reload
@@ -85,12 +67,9 @@ run:
 test:
 	$(ACTIVATE) && pytest tests/ -v
 
-notebook:
-	$(ACTIVATE) && jupyter notebook notebooks/mcp_demo.ipynb
-
 smoke:
-	@curl -sS http://localhost:8001/health && echo
 	@curl -sS http://localhost:8000/health && echo
 
 clean:
-	rm -rf .venv data/chatbot.db services/telecom_api/data/telecom.db logs __pycache__ .pytest_cache
+	rm -rf .venv data/chatbot.db data/chatbot.db-* data/rag.db data/milvus.db \
+	       data/chatbot_checkpoints.db* logs __pycache__ .pytest_cache

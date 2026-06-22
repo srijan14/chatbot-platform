@@ -25,7 +25,7 @@ log = logging.getLogger("rag_engine.scheduler")
 
 @dataclass
 class SourceSpec:
-    name: str                          # human label, e.g. "telecom_policies_local"
+    name: str                          # human label, e.g. "marketplace_docs_local"
     tenant: str
     collection: str
     connector: str                     # connector_name in the registry

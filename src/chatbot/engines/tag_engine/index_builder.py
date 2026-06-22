@@ -62,8 +62,9 @@ def build_tag_index(
     db_path = semantic_layer.database_path.resolve()
     if not db_path.exists():
         raise FileNotFoundError(
-            f"BI warehouse not found at {db_path}. Run `make bi-seed` "
-            f"(or `bi-seed --reset`) to create and populate it."
+            f"Analytics warehouse not found at {db_path}. The TAG skill needs a "
+            f"SQLite warehouse at the path declared in its semantic-layer YAML "
+            f"(`database_path`). Create and populate that DB before enabling TAG."
         )
 
     ro_uri = f"sqlite:///file:{db_path}?mode=ro&uri=true"

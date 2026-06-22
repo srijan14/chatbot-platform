@@ -1,7 +1,7 @@
 [project]
 name = "chatbot-platform"
 version = "0.1.0"
-description = "Generalized chatbot platform — telecom POC (Tool Call Skill via MCP)"
+description = "Generalized, config-driven chatbot platform (RAG, tool-call, NL→SQL skills)"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",
@@ -48,11 +48,11 @@ dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "honcho>=2.0",
-    "jupyter>=1.0",
-]
-notebook = [
-    "jupyterlab>=4.0",
-    "ipykernel>=6.29",
+    # Embedded Milvus engine — used by the RAG tests and the zero-infra
+    # MILVUS_URI=*.db fallback. Linux/macOS only (no Windows wheels), so it's
+    # marked accordingly and kept out of the base deps (prod points MILVUS_URI
+    # at a real Milvus server, which needs only pymilvus).
+    "milvus-lite>=2.4; sys_platform != 'win32'",
 ]
 
 [build-system]

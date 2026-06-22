@@ -102,7 +102,7 @@ async def lifespan(app: FastAPI):
         # "GRAPH-FAILED" with nothing to debug from.
         try:
             from langchain_core.messages import HumanMessage
-            probe_cfg = app.state.router.get_config("telecom_support") if Path("configs/bots/telecom_support.yaml").exists() else None
+            probe_cfg = app.state.router.get_config("am_marketplace") if Path("configs/bots/am_marketplace.yaml").exists() else None
             if probe_cfg is not None:
                 probe_llm = app.state.orchestrator._build_llm(probe_cfg)
                 probe_resp = await probe_llm.ainvoke([HumanMessage(content="ping")])
@@ -126,7 +126,7 @@ async def lifespan(app: FastAPI):
         # warehouse may not be seeded yet, Azure creds may be missing.
         # In all cases, log clearly and let the first chat request retry —
         # never refuse to start the chatbot service entirely.
-        for bot_id in ("telecom_support", "bi_assistant"):
+        for bot_id in ("am_marketplace",):
             try:
                 bot_config = app.state.router.get_config(bot_id)
             except FileNotFoundError:
@@ -174,7 +174,7 @@ async def lifespan(app: FastAPI):
         yield
 
 
-app = FastAPI(title="Chatbot Platform — Telecom POC", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Chatbot Platform", version="0.1.0", lifespan=lifespan)
 
 
 @app.get("/health")

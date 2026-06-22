@@ -1,5 +1,10 @@
 # Chatbot Platform — API Reference
 
+> **Note:** examples below reference the removed POC bots (Telecom Support, BI
+> Assistant). The HTTP contract is unchanged and bot-agnostic — substitute
+> `bot_id: am_marketplace` (the current live bot). `customer_id` is the generic
+> end-user identity (any stable per-user string). See [README](../README.md).
+
 ## Overview
 
 The Chatbot Platform exposes a single HTTP service that hosts multiple bots

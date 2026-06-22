@@ -66,7 +66,7 @@ class SearchResult:
 class CollectionSpec:
     """User-facing collection definition. The physical Milvus collection name is
     `{tenant_id}__{name}` — never assemble it by hand, use `physical_name()`."""
-    name: str                       # logical name e.g. "telecom_policies"
+    name: str                       # logical name e.g. "marketplace_docs"
     tenant_id: str
     embedding_model: str
     dimensions: int

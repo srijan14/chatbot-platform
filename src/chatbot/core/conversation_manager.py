@@ -37,7 +37,7 @@ PAYLOAD_VERSION = 1
 class Session:
     session_id: str
     customer_id: str | None = None
-    bot_id: str = "telecom_support"
+    bot_id: str = "am_marketplace"
     history: list[dict[str, Any]] = field(default_factory=list)
     awaiting_clarification: bool = False
 
@@ -62,7 +62,7 @@ class ConversationManager:
         self,
         session_id: str,
         customer_id: str | None = None,
-        bot_id: str = "telecom_support",
+        bot_id: str = "am_marketplace",
     ) -> Session:
         async with self._sm() as s:
             row = await s.get(SessionRow, session_id)

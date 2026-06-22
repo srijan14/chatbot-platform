@@ -42,7 +42,7 @@ class SessionRow(Base):
 
     session_id: Mapped[str] = mapped_column(String, primary_key=True)
     customer_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
-    bot_id: Mapped[str] = mapped_column(String, default="telecom_support")
+    bot_id: Mapped[str] = mapped_column(String, default="am_marketplace")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow

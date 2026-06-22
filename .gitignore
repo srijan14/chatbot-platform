@@ -1,15 +1,17 @@
-data/*
-notebooks/*
+# Local runtime data under data/ is ignored (SQLite DBs, Milvus Lite files,
+# checkpoints), EXCEPT the RAG corpus (knowledge-base content) and the package
+# marker, which are version-controlled. New corpus files are tracked
+# automatically — no force-add needed.
+/data/*
+!/data/__init__.py
+!/data/rag_corpus/
+
 __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
 venv/
 .env
-data/chatbot.db
-data/chatbot.db-*
-services/telecom_api/data/telecom.db
-services/telecom_api/data/telecom.db-*
 logs/
 .pytest_cache/
 .mypy_cache/
@@ -17,8 +19,4 @@ logs/
 .DS_Store
 *.swp
 node_modules/
-data/**
-notebooks/**
-services/*/data/
-data/
 .idea/

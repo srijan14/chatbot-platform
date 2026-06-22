@@ -1,5 +1,10 @@
 # Chatbot Platform — Overview
 
+> **Note:** the Telecom Support and BI Assistant bots described below were POC
+> demos and have been removed (along with their backing services). The live bot
+> today is **`am_marketplace`** — a documentation Q&A (RAG) bot. The platform
+> design and skills described here still apply. See [README](../README.md) to run it.
+
 ## What this is
 
 A single platform that hosts many chatbots. Each chatbot is a small configuration file plus a chosen set of capabilities. They all share one engine — the same conversation logic, the same safety rules, the same memory, the same monitoring.

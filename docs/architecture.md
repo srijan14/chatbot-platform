@@ -1,7 +1,11 @@
 # Chatbot Platform — Architecture & Solution
 
-> Status: Living document. Last refresh: aligned with branch `claude/enable-tag-skill`.
-> Audience: engineers, PMs, and ops onboarding to the platform.
+> Status: Living document. Audience: engineers, PMs, and ops onboarding.
+> **Note:** the Telecom Support and BI Assistant bots (and their `telecom_api` /
+> `mcp_telecom` / `bi_warehouse` services) were POC demos and have been removed.
+> The live bot is **`am_marketplace`** (RAG over the API Marketplace docs); the
+> `tool_call` and `tag` skills described below remain as available platform
+> capabilities. [README](../README.md) is the operational source of truth.
 
 ## 1. Overview
 
