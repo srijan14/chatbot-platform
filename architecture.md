@@ -345,7 +345,7 @@ telecom slice established.
 ### Plugin Protocols (the swap boundaries)
 
 `src/rag_engine/`:
-- `vector_store/base.py` — `VectorStore` Protocol. Default: `ChromaVectorStore` (persistent client at `data/chroma/`).
+- `vector_store/base.py` — `VectorStore` Protocol. Default: `MilvusVectorStore` (Milvus cluster via `MILVUS_URI`; Milvus Lite file-backed for local dev).
 - `embeddings/base.py` — `Embedder` Protocol. Default: `AzureOpenAIEmbedder` (`text-embedding-3-small`, 1536 dims; reuses chatbot's Azure env).
 - `chunking/base.py` — `Chunker` Protocol. Defaults: `RecursiveCharChunker`, `MarkdownHeaderChunker`.
 - `retrieval/reranker.py` — `Reranker` Protocol. Default: `NoOpReranker`. Cross-encoders drop in here.
@@ -377,9 +377,9 @@ Enforced two ways; both must be in place:
 
 ### Data model (`data/rag.db`, async SQLAlchemy)
 
-- `collections` — PK `{tenant}__{logical}`. Stores embedding model + dimensions per collection so a later model swap requires a new collection (and Chroma will refuse the old one).
+- `collections` — PK `{tenant}__{logical}`. Stores embedding model + dimensions per collection so a later model swap requires a new collection (and Milvus will refuse the old one).
 - `ingestion_jobs` — async job tracking. Crash-safe: rows persist on creation; worker `recover()` re-enqueues anything left QUEUED/RUNNING.
-- `documents` — bookkeeping for dedupe. `content_hash` drives skip-if-unchanged. Chunks themselves live in Chroma — duplicating into SQL was a two-phase commit for zero benefit.
+- `documents` — bookkeeping for dedupe. `content_hash` drives skip-if-unchanged. Chunks themselves live in Milvus — duplicating into SQL was a two-phase commit for zero benefit.
 - `connector_runs` — scheduler fires. Answers "when did this source last sync?"
 
 ### Ingestion flow
@@ -416,7 +416,7 @@ make rag-bootstrap
 ### Critical files
 
 - `src/rag_engine/engine.py` — RagEngine facade
-- `src/rag_engine/vector_store/chroma_store.py` — kNN backend
+- `src/rag_engine/vector_store/milvus_store.py` — kNN backend
 - `services/rag_api/src/rag_api/routes/ingest.py` — pipeline trigger
 - `services/rag_mcp/src/rag_mcp/tools.py` — the MCP tool schema the LLM sees
 - `src/chatbot/skills/rag_skill.py` — chatbot ↔ RAG bridge

@@ -56,7 +56,7 @@ class Retriever:
                 chunk_id=h.id,
                 doc_id=str(h.metadata.get("doc_id", "")),
                 text=h.document,
-                # Convert Chroma's L2 distance into a "higher = better" similarity.
+                # Convert the vector store's L2 distance into a "higher = better" similarity.
                 # Exact units don't matter — only the ordering — but humans expect
                 # bigger numbers to mean "more relevant".
                 score=1.0 / (1.0 + h.distance),

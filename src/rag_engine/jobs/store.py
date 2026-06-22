@@ -114,7 +114,7 @@ class JobsRepo:
 
 
 class DocumentsRepo:
-    """Bookkeeping for dedupe. Vectors live in Chroma; this is just hashes
+    """Bookkeeping for dedupe. Vectors live in Milvus; this is just hashes
     and counts so we know what was ingested and whether it has changed."""
 
     def __init__(self, sessionmaker: async_sessionmaker[AsyncSession]):
@@ -158,7 +158,7 @@ class DocumentsRepo:
     async def delete(self, doc_id: str) -> bool:
         """Remove the bookkeeping row for a document. Returns False if absent.
 
-        The vector chunks are deleted separately (Chroma owns them); this only
+        The vector chunks are deleted separately (Milvus owns them); this only
         clears the dedupe/list row so the document no longer appears as ingested.
         """
         async with self._sm() as s:

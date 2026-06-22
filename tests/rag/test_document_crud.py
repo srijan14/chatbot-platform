@@ -1,6 +1,6 @@
 """RagEngine single-document CRUD: add / update / unchanged / delete / list.
 
-Uses the real ChromaVectorStore (tmp_path) + the fake embedder, mirroring
+Uses the real MilvusVectorStore (Milvus Lite, tmp_path) + the fake embedder, mirroring
 test_engine_facade.py.
 """
 from __future__ import annotations
@@ -10,12 +10,12 @@ import pytest
 from rag_engine import RagEngine
 from rag_engine.chunking.auto import AutoChunker
 from rag_engine.models import CollectionSpec
-from rag_engine.vector_store.chroma_store import ChromaVectorStore
+from rag_engine.vector_store.milvus_store import MilvusVectorStore
 
 
 async def _engine(tmp_path, rag_sm, fake_embedder) -> RagEngine:
     engine = RagEngine(
-        vector_store=ChromaVectorStore(persist_path=str(tmp_path / "chroma")),
+        vector_store=MilvusVectorStore(uri=str(tmp_path / "milvus.db")),
         embedder=fake_embedder,
         chunker=AutoChunker(size=200, overlap=20),
         sessionmaker=rag_sm,

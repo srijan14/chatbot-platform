@@ -1,6 +1,6 @@
 """SQLAlchemy tables for the RAG control plane.
 
-Note: chunks are *not* mirrored here — Chroma owns them. We keep only what
+Note: chunks are *not* mirrored here — Milvus owns them. We keep only what
 SQL is better at: collection metadata, job tracking, document-level dedupe,
 and connector run history.
 """
@@ -19,7 +19,7 @@ class Base(DeclarativeBase):
 class CollectionRow(Base):
     __tablename__ = "collections"
 
-    # Physical Chroma name = "{tenant_id}__{logical_name}". Always the PK.
+    # Physical Milvus name = "{tenant_id}__{logical_name}". Always the PK.
     name: Mapped[str] = mapped_column(String(255), primary_key=True)
     logical_name: Mapped[str] = mapped_column(String(255), index=True)
     tenant_id: Mapped[str] = mapped_column(String(64), index=True)

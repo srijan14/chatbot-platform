@@ -1,6 +1,6 @@
 """Core dataclasses passed between RAG engine components.
 
-These are platform-neutral — no Chroma, FastAPI, or Azure types leak in. Each
+These are platform-neutral — no Milvus, FastAPI, or Azure types leak in. Each
 seam (vector store, embedder, connector, chunker, reranker) consumes and
 produces these shapes so implementations are swappable.
 """
@@ -40,7 +40,7 @@ class Document:
 
 @dataclass
 class Chunk:
-    """A token-budget-sized slice of a Document plus the metadata Chroma stores.
+    """A token-budget-sized slice of a Document plus the metadata Milvus stores.
 
     `metadata` always carries `tenant_id`, `source_uri`, `doc_id`, and `ordinal`
     — these are non-negotiable for retrieval-time filtering and citation.
@@ -64,7 +64,7 @@ class SearchResult:
 
 @dataclass
 class CollectionSpec:
-    """User-facing collection definition. The physical Chroma collection name is
+    """User-facing collection definition. The physical Milvus collection name is
     `{tenant_id}__{name}` — never assemble it by hand, use `physical_name()`."""
     name: str                       # logical name e.g. "telecom_policies"
     tenant_id: str

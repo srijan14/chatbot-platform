@@ -1,7 +1,7 @@
 """In-process RAG runtime for the chatbot platform.
 
-The platform owns RAG directly: it constructs one `RagEngine` (Chroma + Azure
-embeddings + AutoChunker + the rag SQLite bookkeeping DB) and keeps it on
+The platform owns RAG directly: it constructs one `RagEngine` (Milvus + Azure
+embeddings + AutoChunker + the rag bookkeeping DB) and keeps it on
 `app.state`. Each bot gets its own vector-DB collection — physical name
 `{bot_id}__{logical}` — so tenancy is per-bot with zero extra config.
 
@@ -24,7 +24,7 @@ from rag_engine.chunking import AutoChunker
 from rag_engine.embeddings import AzureOpenAIEmbedder
 from rag_engine.models import CollectionSpec, IngestionJob, JobStatus
 from rag_engine.storage.db import create_engine_and_sessionmaker, init_schema
-from rag_engine.vector_store.chroma_store import ChromaVectorStore
+from rag_engine.vector_store.milvus_store import MilvusVectorStore
 
 from src.chatbot.core.bot_config_store import BotConfig
 
@@ -42,7 +42,7 @@ async def build_rag_engine() -> tuple[RagEngine, AsyncEngine]:
     await init_schema(db_engine)
 
     engine = RagEngine(
-        vector_store=ChromaVectorStore(),
+        vector_store=MilvusVectorStore(),
         embedder=AzureOpenAIEmbedder(),
         chunker=AutoChunker(),
         sessionmaker=sessionmaker,
