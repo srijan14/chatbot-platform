@@ -15,6 +15,10 @@ dependencies = [
     "python-dotenv>=1.0",
     "sqlalchemy[asyncio]>=2.0",
     "aiosqlite>=0.20",
+    # Postgres is the production relational backend (sessions, messages,
+    # turn_logs, RAG control plane). asyncpg is the async SQLAlchemy driver;
+    # SQLite stays available for zero-infra local runs by leaving the URLs as-is.
+    "asyncpg>=0.29",
     # Milvus is the production vector backend. pymilvus bundles Milvus Lite
     # (embedded, file-backed) for local/dev/tests; the same client talks to a
     # real Milvus cluster in prod via MILVUS_URI.
@@ -27,6 +31,10 @@ dependencies = [
     "langchain-core>=0.3.0",
     "langchain-openai>=0.2.0",
     "langgraph-checkpoint-sqlite>=2.0",
+    # Postgres checkpointer for LangGraph conversation state. psycopg[binary]
+    # ships a self-contained libpq so it works on a laptop with no system libpq.
+    "langgraph-checkpoint-postgres>=2.0",
+    "psycopg[binary,pool]>=3.2",
     # LlamaIndex NL-SQL stack
     "llama-index-core>=0.12",
     "llama-index-llms-azure-openai>=0.3",

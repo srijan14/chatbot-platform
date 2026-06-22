@@ -1,0 +1,102 @@
+# Local infrastructure for the chatbot platform.
+#
+#   docker compose up -d        # start Postgres + Milvus (and Milvus' deps)
+#   docker compose ps           # check health
+#   docker compose down         # stop; add -v to also wipe the data volumes
+#
+# What this gives you locally:
+#   * Postgres  → relational plane (sessions, messages, turn_logs, RAG control
+#                 plane, LangGraph checkpoints)            → localhost:5432
+#   * Milvus    → vector store (RAG embeddings), standalone → localhost:19530
+#                 (etcd + minio are Milvus' own dependencies, not used directly)
+#
+# Point .env at these:
+#   CHATBOT_DB_URL=postgresql+asyncpg://chatbot:chatbot@localhost:5432/chatbot
+#   RAG_DB_URL=postgresql+asyncpg://chatbot:chatbot@localhost:5432/chatbot
+#   CHATBOT_CHECKPOINT_DB_URL=postgresql://chatbot:chatbot@localhost:5432/chatbot
+#   MILVUS_URI=http://localhost:19530
+name: chatbot-platform
+
+services:
+  # --- Relational plane ----------------------------------------------------
+  postgres:
+    image: postgres:16
+    container_name: chatbot-postgres
+    environment:
+      POSTGRES_USER: chatbot
+      POSTGRES_PASSWORD: chatbot
+      POSTGRES_DB: chatbot
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chatbot -d chatbot"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # --- Vector store: Milvus standalone + its deps (etcd, minio) ------------
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.16
+    container_name: chatbot-milvus-etcd
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    volumes:
+      - etcd_data:/etcd
+    command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  minio:
+    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
+    container_name: chatbot-milvus-minio
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    command: minio server /minio_data --console-address ":9001"
+    volumes:
+      - minio_data:/minio_data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  milvus:
+    image: milvusdb/milvus:v2.4.13
+    container_name: chatbot-milvus
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    volumes:
+      - milvus_data:/var/lib/milvus
+    ports:
+      - "19530:19530"   # gRPC/SDK port — this is what MILVUS_URI points at
+      - "9091:9091"     # health/metrics
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      start_period: 90s
+      timeout: 20s
+      retries: 5
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+volumes:
+  pg_data:
+  etcd_data:
+  minio_data:
+  milvus_data:

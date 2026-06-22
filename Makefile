@@ -1,4 +1,4 @@
-.PHONY: install seed reset run telecom_api mcp_telecom chatbot test smoke clean rag-ingest bi-seed bi-reset notebook
+.PHONY: install seed reset run telecom_api mcp_telecom chatbot test smoke clean rag-ingest bi-seed bi-reset notebook infra-up infra-down infra-reset infra-logs infra-ps
 
 # ---------------------------------------------------------------------------
 # Environment activation
@@ -19,6 +19,31 @@
 #     make run ACTIVATE='. .venv/bin/activate'
 # ---------------------------------------------------------------------------
 ACTIVATE ?= true
+
+# ---------------------------------------------------------------------------
+# Local infrastructure (Postgres + Milvus) via docker-compose.
+# Start these before `make run` when .env points at Postgres/Milvus URLs.
+# ---------------------------------------------------------------------------
+infra-up:
+	docker compose up -d
+	@echo "Waiting for Postgres + Milvus to report healthy..."
+	@until [ "$$(docker inspect -f '{{.State.Health.Status}}' chatbot-postgres 2>/dev/null)" = "healthy" ] && \
+	       [ "$$(docker inspect -f '{{.State.Health.Status}}' chatbot-milvus 2>/dev/null)" = "healthy" ]; do \
+	  printf '.'; sleep 3; \
+	done; echo " ready."
+
+infra-down:
+	docker compose down
+
+# Same as infra-down but also deletes the data volumes (fresh start).
+infra-reset:
+	docker compose down -v
+
+infra-ps:
+	docker compose ps
+
+infra-logs:
+	docker compose logs -f
 
 install:
 	$(ACTIVATE) && pip install --upgrade pip && \

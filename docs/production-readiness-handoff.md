@@ -130,11 +130,17 @@ infra/secrets only.
 These were identified but **not yet implemented**.
 
 ### High-leverage, low-risk (suggested next PR)
-1. **Postgres for the two SQLAlchemy stores.** Add `asyncpg`; point
-   `CHATBOT_DB_URL` / `RAG_DB_URL` at Postgres
-   (`postgresql+asyncpg://...`). Mostly config; tiny code.
-2. **LangGraph checkpointer → `AsyncPostgresSaver`** (`langgraph-checkpoint-postgres`),
-   replacing `AsyncSqliteSaver` in `src/chatbot/app.py`. Small code.
+1. ~~**Postgres for the two SQLAlchemy stores.**~~ **DONE.** Added `asyncpg`;
+   `CHATBOT_DB_URL` / `RAG_DB_URL` now default to `postgresql+asyncpg://...`.
+   URL-driven, no ORM change. `pool_pre_ping=True` added to both engines.
+2. ~~**LangGraph checkpointer → `AsyncPostgresSaver`.**~~ **DONE.** Added
+   `langgraph-checkpoint-postgres` + `psycopg[binary,pool]`. New
+   `src/chatbot/persistence/checkpointer.py` `open_checkpointer()` picks
+   SQLite vs Postgres from env (`CHATBOT_CHECKPOINT_DB_URL`, a libpq DSN) and
+   runs `setup()`; `src/chatbot/app.py` uses it. SQLite stays the zero-infra
+   fallback. Local Postgres + Milvus now run via `docker-compose.yml`
+   (`make infra-up`). ⚠️ Driver split: SQLAlchemy uses `postgresql+asyncpg://`,
+   the checkpointer uses plain `postgresql://` (psycopg).
 3. **Config hot-reload** (update bot YAMLs without redeploy). Caches to bust:
    - `src/chatbot/core/bot_config_store.py` module-level `_cache`
    - `src/chatbot/router/bot_router.py` `_configs` and `_skills`

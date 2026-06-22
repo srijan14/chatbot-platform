@@ -39,6 +39,9 @@ Three local processes. RAG runs **in-process** inside `chatbot` (it imports the
    your subscription doesn't have it yet, request access in the Azure portal first.
 2. **Python 3.11** (the repo includes `.python-version` for pyenv).
 3. **An Azure OpenAI resource and a model deployment.**
+4. **Docker + Docker Compose** — for the local Postgres + Milvus instances
+   (`docker-compose.yml`). Skip only if you opt into the zero-infra SQLite /
+   Milvus-Lite fallback (see [Local infrastructure](#local-infrastructure-postgres--milvus)).
 
 ### Setting up Azure OpenAI (one-time)
 
@@ -68,12 +71,18 @@ make install
 cp .env.example .env
 # Edit .env and fill in:
 #   AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_API_VERSION
+# The DB/Milvus URLs already point at the local docker-compose stack.
 
 # 3. Set the deployment name in the bot config
 # Open configs/bots/telecom_support.yaml and set llm.deployment to whatever
 # you named your deployment in the Azure portal (default in the file: gpt-4o).
 
-# 4. Seed SQLite with 5 demo customers
+# 3b. Start local infrastructure (Postgres + Milvus). See "Local
+#     infrastructure" below. Tables are auto-created on first boot.
+make infra-up
+
+# 4. Seed the telecom demo backend (its own SQLite mock — unrelated to the
+#    platform's Postgres) with 5 demo customers
 make seed
 
 # 5. Run the services. Easiest: honcho (one terminal) — reads the Procfile
@@ -88,6 +97,47 @@ make chatbot
 # 6. Open the demo UI
 open http://localhost:8000/
 ```
+
+## Local infrastructure (Postgres + Milvus)
+
+The platform's operational state lives in **Postgres** (relational plane) and
+**Milvus** (vector store). `docker-compose.yml` runs both locally.
+
+```bash
+make infra-up        # start Postgres + Milvus (+ Milvus' etcd/minio deps),
+                     # waits until both report healthy
+make infra-ps        # show container status
+make infra-logs      # tail logs
+make infra-down      # stop (keeps data volumes)
+make infra-reset     # stop AND wipe data volumes (fresh start)
+```
+
+**What runs where:**
+
+| Service | Port | Used by | Holds |
+|---|---|---|---|
+| Postgres | 5432 | `CHATBOT_DB_URL`, `RAG_DB_URL`, `CHATBOT_CHECKPOINT_DB_URL` | sessions, messages, turn_logs, RAG control plane, LangGraph checkpoints |
+| Milvus | 19530 | `MILVUS_URI` | RAG embeddings (per-bot collections) |
+
+Schema is created automatically on first chatbot boot
+(`Base.metadata.create_all` for the SQLAlchemy stores; the LangGraph
+checkpointer runs its own `setup()`). No migration step for local dev.
+
+**Two driver conventions — keep them straight in `.env`:**
+
+- SQLAlchemy stores (`CHATBOT_DB_URL`, `RAG_DB_URL`) use **asyncpg**:
+  `postgresql+asyncpg://chatbot:chatbot@localhost:5432/chatbot`
+- The LangGraph checkpointer (`CHATBOT_CHECKPOINT_DB_URL`) uses **psycopg** — a
+  plain libpq DSN with **no** `+driver`:
+  `postgresql://chatbot:chatbot@localhost:5432/chatbot`
+
+**Zero-infra fallback (no Docker).** Both backends still support embedded files.
+In `.env`, set the SQLite/Milvus-Lite values shown (commented) in
+`.env.example`: `CHATBOT_DB_URL=sqlite+aiosqlite:///data/chatbot.db`,
+`RAG_DB_URL=sqlite+aiosqlite:///data/rag.db`, leave `CHATBOT_CHECKPOINT_DB_URL`
+unset (falls back to a SQLite file), and `MILVUS_URI=./data/milvus.db`.
+
+> **Milvus Lite is Linux/macOS only.** Windows devs must use the Docker Milvus.
 
 ## Demo customers
 
@@ -244,6 +294,10 @@ on the next user turn.
 
 Real auth (customer_id flows in cleartext), response streaming, the Web-Scrape
 skill (designed only — plugs into the RAG engine as another connector), alembic
-migrations (`create_all` on startup), Postgres (SQLite only). RAG is multi-tenant
-at the engine level (per-tenant collections + metadata filter); the chatbot
-front door is still single-tenant.
+migrations (`create_all` on startup — fine for local, but add Alembic before a
+shared/prod schema exists). RAG is multi-tenant at the engine level (per-tenant
+collections + metadata filter); the chatbot front door is still single-tenant.
+
+Storage is now Postgres (relational) + Milvus (vector) by default, with an
+embedded SQLite / Milvus-Lite fallback for zero-infra runs — see
+[Local infrastructure](#local-infrastructure-postgres--milvus).

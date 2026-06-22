@@ -37,7 +37,9 @@ def create_engine_and_sessionmaker(
 ) -> tuple[AsyncEngine, async_sessionmaker[AsyncSession]]:
     db_url = url or os.getenv("CHATBOT_DB_URL", DEFAULT_DB_URL)
     _ensure_sqlite_dir(db_url)
-    engine = create_async_engine(db_url, echo=False, future=True)
+    # pool_pre_ping recycles connections dropped by Postgres/idle-timeouts; it's
+    # a cheap SELECT 1 and harmless on SQLite, so we keep one code path.
+    engine = create_async_engine(db_url, echo=False, future=True, pool_pre_ping=True)
     sm = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     return engine, sm
 

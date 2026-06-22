@@ -4,8 +4,9 @@ Owns:
   • A `langchain.agents.create_agent` graph per bot (cached at first build),
     with three middlewares: dynamic system prompt, token-usage accumulator,
     per-tenant budget guard.
-  • A LangGraph `AsyncSqliteSaver` checkpointer that persists per-session
-    conversation state (the agent's `messages` list and our custom fields).
+  • A LangGraph checkpointer (SQLite file or Postgres, chosen from env) that
+    persists per-session conversation state (the agent's `messages` list and
+    our custom fields).
   • The `run_turn(session, message, bot_config, skills) → TurnResult`
     interface the chat handler already calls.
 
@@ -33,7 +34,7 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langchain_openai import AzureChatOpenAI
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.types import Command
 
 from src.chatbot.adapters.skill_to_tool import skill_to_langchain_tools
@@ -63,7 +64,7 @@ class LangGraphOrchestrator:
         azure_endpoint: str,
         azure_api_key: str,
         azure_api_version: str,
-        checkpointer: AsyncSqliteSaver,
+        checkpointer: BaseCheckpointSaver,
         budget_daily_cap: int = 1_000_000,
     ):
         self._azure_endpoint = azure_endpoint

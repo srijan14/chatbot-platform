@@ -13,33 +13,28 @@ load_dotenv()
 from fastapi import FastAPI            # noqa: E402
 from fastapi.responses import FileResponse   # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver  # noqa: E402
 
 from src.chatbot.api import chat as chat_api  # noqa: E402
 from src.chatbot.api import documents as documents_api  # noqa: E402
 from src.chatbot.core.conversation_manager import ConversationManager  # noqa: E402
 from src.chatbot.core.langgraph_orchestrator import LangGraphOrchestrator  # noqa: E402
 from src.chatbot.core.rag_runtime import bootstrap_bot_rag, build_rag_engine  # noqa: E402
+from src.chatbot.persistence.checkpointer import open_checkpointer  # noqa: E402
 from src.chatbot.persistence.db import create_engine_and_sessionmaker, init_schema  # noqa: E402
 from src.chatbot.router.bot_router import BotRouter  # noqa: E402
 
 STATIC_DIR = Path(__file__).parent / "static"
-CHECKPOINT_DB = os.getenv("CHATBOT_CHECKPOINT_DB", "data/chatbot_checkpoints.db")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Ensure the checkpoint DB's directory exists before SQLite opens it.
-    Path(CHECKPOINT_DB).parent.mkdir(parents=True, exist_ok=True)
-
     async with AsyncExitStack() as stack:
-        # LangGraph's AsyncSqliteSaver owns per-session conversation state
-        # (the agent's `messages` list). It's an async context manager so we
-        # let an AsyncExitStack drive its lifecycle alongside the SQLAlchemy
-        # engine for our analytics tables.
-        checkpointer = await stack.enter_async_context(
-            AsyncSqliteSaver.from_conn_string(CHECKPOINT_DB)
-        )
+        # LangGraph's checkpointer owns per-session conversation state (the
+        # agent's `messages` list). The backend (SQLite file or Postgres) is
+        # picked from env inside open_checkpointer; it's an async context
+        # manager so the AsyncExitStack drives its lifecycle alongside the
+        # SQLAlchemy engine for our analytics tables.
+        checkpointer = await stack.enter_async_context(open_checkpointer())
 
         # Analytics DB (TurnLog rows + SessionRow metadata). Separate file
         # from the LangGraph checkpoint store so the two layers can evolve
