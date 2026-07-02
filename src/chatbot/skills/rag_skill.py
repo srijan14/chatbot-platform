@@ -27,16 +27,18 @@ _DEFAULT_INSTRUCTIONS = (
     "fair-usage rules, refund/cancellation windows, or any 'how does X work' "
     "question, call `search_knowledge_base` BEFORE answering and ground your "
     "reply in the passages it returns. Cite sources inline using the `[N]` "
-    "markers from the returned text. Prefer the knowledge base over guessing; "
-    "prefer domain action tools (account, billing, etc.) when the question is "
-    "about a specific customer record."
+    "markers from the returned text. When a passage includes a link in angle "
+    "brackets `<...>`, include that link with its citation so the user can open "
+    "the source document. Prefer the knowledge base over guessing; prefer domain "
+    "action tools (account, billing, etc.) when the question is about a specific "
+    "customer record."
 )
 
 
 def _format_results(results: list[SearchResult]) -> str:
-    """Render passages as `[N] (source_uri[heading])\\n<chunk>` so the model can
-    cite sources without parsing JSON. Ported verbatim from the old rag_mcp tool
-    so citations stay identical to the previous behavior.
+    """Render passages as `[N] (source_uri[heading]) <url>\\n<chunk>` so the model
+    can cite sources (and their download link) without parsing JSON. `<url>` is a
+    presigned link to the original document when the blob backend provides one.
     """
     if not results:
         return "No relevant passages found."
@@ -44,8 +46,25 @@ def _format_results(results: list[SearchResult]) -> str:
     for i, r in enumerate(results, start=1):
         heading = (r.metadata or {}).get("heading")
         head = f" [{heading}]" if heading else ""
-        lines.append(f"[{i}] ({r.source_uri}{head})\n{r.text}")
+        url = (r.metadata or {}).get("source_url")
+        link = f" <{url}>" if url else ""
+        lines.append(f"[{i}] ({r.source_uri}{head}){link}\n{r.text}")
     return "\n\n".join(lines)
+
+
+def _sources_from(results: list[SearchResult]) -> list[dict]:
+    """Structured source references for the chat response: one per retrieved
+    passage, carrying the source document id, a display title, and a link
+    (presigned URL when the blob backend provides one)."""
+    sources: list[dict] = []
+    for r in results:
+        md = r.metadata or {}
+        sources.append({
+            "document_id": r.source_uri,
+            "title": md.get("heading") or md.get("filename"),
+            "url": md.get("source_url"),
+        })
+    return sources
 
 
 class RagSkill(Skill):
@@ -150,7 +169,10 @@ class RagSkill(Skill):
                 "[rag] search collection=%s tenant=%s top_k=%d hits=%d",
                 self.collection, self.tenant_id, top_k, len(results),
             )
-            return ToolResult(text=_format_results(results))
+            return ToolResult(
+                text=_format_results(results),
+                sources=_sources_from(results),
+            )
 
         if name == LIST_TOOL:
             try:

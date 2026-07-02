@@ -133,7 +133,12 @@ class DocumentsRepo:
     ) -> None:
         async with self._sm() as s:
             existing = (
-                await s.execute(select(DocumentRow).where(DocumentRow.doc_id == doc_id))
+                await s.execute(
+                    select(DocumentRow).where(
+                        DocumentRow.doc_id == doc_id,
+                        DocumentRow.tenant_id == tenant_id,
+                    )
+                )
             ).scalar_one_or_none()
             h = content_hash(text)
             if existing:
@@ -155,14 +160,83 @@ class DocumentsRepo:
                 )
             await s.commit()
 
-    async def delete(self, doc_id: str) -> bool:
-        """Remove the bookkeeping row for a document. Returns False if absent.
+    async def set_blob(
+        self,
+        tenant_id: str,
+        doc_id: str,
+        *,
+        blob_key: str,
+        content_type: str,
+        size_bytes: int,
+        filename: str | None,
+    ) -> bool:
+        """Record where a document's original artifact lives in the BlobStore.
+
+        Keyed by (tenant_id, doc_id) so a bot only ever touches its own row.
+        Called after the document row exists (post-ingest). Returns False if no
+        row matched — e.g. ingestion errored before bookkeeping was written.
+        """
+        async with self._sm() as s:
+            row = await s.get(DocumentRow, {"doc_id": doc_id, "tenant_id": tenant_id})
+            if row is None:
+                return False
+            row.blob_key = blob_key
+            row.content_type = content_type
+            row.size_bytes = size_bytes
+            row.filename = filename
+            await s.commit()
+            return True
+
+    async def get(self, tenant_id: str, doc_id: str) -> dict[str, Any] | None:
+        """Fetch one document's bookkeeping row for a tenant (or None)."""
+        async with self._sm() as s:
+            r = await s.get(DocumentRow, {"doc_id": doc_id, "tenant_id": tenant_id})
+            if r is None:
+                return None
+            return {
+                "doc_id": r.doc_id,
+                "tenant_id": r.tenant_id,
+                "collection": r.collection,
+                "source_uri": r.source_uri,
+                "chunk_count": r.chunk_count,
+                "ingested_at": r.ingested_at,
+                "metadata": json.loads(r.metadata_json or "{}"),
+                "blob_key": r.blob_key,
+                "content_type": r.content_type,
+                "size_bytes": r.size_bytes,
+                "filename": r.filename,
+            }
+
+    async def blob_keys_for(
+        self, tenant_id: str, doc_ids: set[str] | list[str]
+    ) -> dict[str, str]:
+        """Map each doc_id → its blob key (skipping docs with no stored blob).
+
+        Scoped to `tenant_id` so one bot can never resolve another's blobs.
+        Used to attach presigned source links to search hits in one query.
+        """
+        ids = [d for d in doc_ids if d]
+        if not ids:
+            return {}
+        async with self._sm() as s:
+            rows = (
+                await s.execute(
+                    select(DocumentRow).where(
+                        DocumentRow.tenant_id == tenant_id,
+                        DocumentRow.doc_id.in_(ids),
+                    )
+                )
+            ).scalars().all()
+            return {r.doc_id: r.blob_key for r in rows if r.blob_key}
+
+    async def delete(self, tenant_id: str, doc_id: str) -> bool:
+        """Remove a tenant's bookkeeping row for a document. False if absent.
 
         The vector chunks are deleted separately (Milvus owns them); this only
         clears the dedupe/list row so the document no longer appears as ingested.
         """
         async with self._sm() as s:
-            row = await s.get(DocumentRow, doc_id)
+            row = await s.get(DocumentRow, {"doc_id": doc_id, "tenant_id": tenant_id})
             if row is None:
                 return False
             await s.delete(row)
@@ -191,6 +265,10 @@ class DocumentsRepo:
                     "chunk_count": r.chunk_count,
                     "ingested_at": r.ingested_at,
                     "metadata": json.loads(r.metadata_json or "{}"),
+                    "blob_key": r.blob_key,
+                    "content_type": r.content_type,
+                    "size_bytes": r.size_bytes,
+                    "filename": r.filename,
                 }
                 for r in rows
             ]

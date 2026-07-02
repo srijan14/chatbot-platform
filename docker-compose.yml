@@ -63,6 +63,13 @@ services:
     command: minio server /minio_data --console-address ":9001"
     volumes:
       - minio_data:/minio_data
+    # Published to the host so the chatbot process (running outside compose) can
+    # store/serve document blobs and mint presigned links. :9000 = S3 API,
+    # :9001 = web console. This MinIO also backs Milvus internally; document
+    # blobs live in their own bucket (RAG_S3_BUCKET, default "rag-documents").
+    ports:
+      - "9000:9000"
+      - "9001:9001"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 30s

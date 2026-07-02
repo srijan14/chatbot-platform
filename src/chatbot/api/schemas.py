@@ -43,6 +43,19 @@ class TurnSignalOut(BaseModel):
     payload: dict
 
 
+class SourceRef(BaseModel):
+    """A source document the assistant's answer was grounded in this turn."""
+    document_id: str = Field(..., description="The document's id (source URI).")
+    title: Optional[str] = Field(
+        default=None, description="Display title — section heading or filename."
+    )
+    url: Optional[str] = Field(
+        default=None,
+        description="Link to the source document (a presigned URL when object "
+        "storage is configured), or null if none is available.",
+    )
+
+
 class ChatResponse(BaseModel):
     session_id: str
     trace_id: str
@@ -52,6 +65,8 @@ class ChatResponse(BaseModel):
     tool_calls: list[ToolCallTraceOut]
     latency_ms: int
     tokens: dict
+    # Source documents the answer drew on (RAG citations), de-duplicated.
+    sources: list[SourceRef] = Field(default_factory=list)
     # Generic surface: every TurnSignal a skill emitted during this turn.
     signals: list[TurnSignalOut] = Field(default_factory=list)
     # Backward-compat fields, derived from `signals` (clarification type).
@@ -90,6 +105,11 @@ class DocumentUpsertResponse(BaseModel):
     chunks: int
     embedded: int
     upserted: int
+    # Stored original artifact + link to fetch it back.
+    content_type: Optional[str] = None
+    size_bytes: Optional[int] = None
+    filename: Optional[str] = None
+    download_url: Optional[str] = None
 
 
 class DocumentInfo(BaseModel):
@@ -98,6 +118,11 @@ class DocumentInfo(BaseModel):
     chunk_count: int
     ingested_at: Optional[str] = None
     metadata: dict = Field(default_factory=dict)
+    # Stored original artifact + link to fetch it back.
+    filename: Optional[str] = None
+    content_type: Optional[str] = None
+    size_bytes: Optional[int] = None
+    download_url: Optional[str] = None
 
 
 class DocumentListResponse(BaseModel):
@@ -114,6 +139,7 @@ class DocumentDeleteResponse(BaseModel):
     doc_id: str
     deleted: bool
     chunks_removed: int
+    blob_deleted: bool = False
 
 
 class HistoryMessage(BaseModel):

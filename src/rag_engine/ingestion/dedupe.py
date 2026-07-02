@@ -29,7 +29,10 @@ async def decide(session: AsyncSession, doc: Document) -> DedupeDecision:
     h = content_hash(doc.content)
     row = (
         await session.execute(
-            select(DocumentRow).where(DocumentRow.doc_id == doc.doc_id)
+            select(DocumentRow).where(
+                DocumentRow.doc_id == doc.doc_id,
+                DocumentRow.tenant_id == doc.tenant_id,
+            )
         )
     ).scalar_one_or_none()
     if row is None:

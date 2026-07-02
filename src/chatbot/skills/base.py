@@ -55,12 +55,17 @@ class ToolResult:
                            after this tool round. Use for skills that pause
                            the conversation waiting for the user (clarify /
                            confirm / handoff).
+      sources              Structured source references the tool grounded its
+                           result in (e.g. RAG documents: {document_id, title,
+                           url}). Collected across the turn and surfaced on the
+                           chat response so callers can show clickable citations.
     """
     text: str
     is_error: bool = False
     user_visible_text: str | None = None
     signal: TurnSignal | None = None
     terminal: bool = False
+    sources: list[dict[str, Any]] | None = None
 
 
 class Skill(ABC):

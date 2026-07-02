@@ -16,19 +16,107 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from rag_engine import RagEngine
-from rag_engine.chunking import AutoChunker
+from rag_engine.chunking import AutoChunker, LLMRoutingChunker
+from rag_engine.chunking.base import Chunker
 from rag_engine.embeddings import AzureOpenAIEmbedder
 from rag_engine.models import CollectionSpec, IngestionJob, JobStatus
+from rag_engine.storage.blobs import BlobStore, LocalBlobStore
 from rag_engine.storage.db import create_engine_and_sessionmaker, init_schema
 from rag_engine.vector_store.milvus_store import MilvusVectorStore
 
-from src.chatbot.core.bot_config_store import BotConfig
+from src.chatbot.core.bot_config_store import BotConfig, is_reasoning_deployment
+from src.chatbot.core.chunk_planner import make_chunk_planner
 
 log = logging.getLogger("chatbot.rag")
+
+# Best-fit model for the chunk-planner: deciding "markdown vs. recursive + size"
+# is a structured classification, not a reasoning task. A fast, capable model
+# nails it cheaply, so we default here rather than reusing the bot's main
+# (possibly reasoning-class) deployment. Override with
+# AZURE_OPENAI_CHUNKING_DEPLOYMENT to match your Azure deployment name.
+DEFAULT_CHUNKING_DEPLOYMENT = "gpt-4o-mini"
+
+
+def _truthy(value: str | None) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _build_chunker() -> Chunker:
+    """Pick the document chunker for the engine.
+
+    Default is the mime-dispatching `AutoChunker` — today's behaviour. When
+    `RAG_LLM_CHUNKING` is enabled we wrap a single-call LLM planner in
+    `LLMRoutingChunker` so chunking adapts to each document's actual structure.
+    Building the planner is best-effort: if Azure config is missing or the SDK
+    construction fails, we log and fall back to `AutoChunker` so RAG still works.
+    """
+    if not _truthy(os.getenv("RAG_LLM_CHUNKING")):
+        return AutoChunker()
+
+    # Prefer an explicit chunking deployment; otherwise use the best-fit default
+    # (NOT the bot's main model, which may be a slow reasoning deployment).
+    deployment = (
+        os.getenv("AZURE_OPENAI_CHUNKING_DEPLOYMENT")
+        or DEFAULT_CHUNKING_DEPLOYMENT
+    )
+
+    try:
+        planner = make_chunk_planner(
+            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", ""),
+            azure_api_key=os.getenv("AZURE_OPENAI_API_KEY", ""),
+            azure_api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2025-01-01-preview"),
+            deployment=deployment,
+            # Reasoning deployments reject a custom temperature — omit it.
+            temperature=None if is_reasoning_deployment(deployment) else 0.0,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        log.warning(
+            "LLM chunk planner unavailable (%s: %s); using AutoChunker.",
+            type(exc).__name__, exc,
+        )
+        return AutoChunker()
+
+    log.info("[rag] LLM-assisted chunking enabled (deployment=%s)", deployment)
+    return LLMRoutingChunker(planner)
+
+
+def _build_blob_store() -> BlobStore:
+    """Pick where original document artifacts are stored.
+
+    Default is the filesystem `LocalBlobStore` (zero-infra). Set
+    `RAG_BLOB_BACKEND=s3` to persist to MinIO / any S3-compatible store and
+    return **presigned** download links. Construction is best-effort: if the S3
+    client/config is unusable we log and fall back to the filesystem so RAG never
+    fails to start over blob storage.
+    """
+    backend = (os.getenv("RAG_BLOB_BACKEND") or "local").strip().lower()
+    if backend in {"s3", "minio"}:
+        try:
+            from rag_engine.storage.blobs import S3BlobStore
+
+            store = S3BlobStore(
+                endpoint_url=os.getenv("RAG_S3_ENDPOINT", "http://localhost:9000"),
+                access_key=os.getenv("RAG_S3_ACCESS_KEY", "minioadmin"),
+                secret_key=os.getenv("RAG_S3_SECRET_KEY", "minioadmin"),
+                bucket=os.getenv("RAG_S3_BUCKET", "rag-documents"),
+                region=os.getenv("RAG_S3_REGION", "us-east-1"),
+                public_endpoint=os.getenv("RAG_S3_PUBLIC_ENDPOINT") or None,
+                url_expiry=int(os.getenv("RAG_S3_URL_EXPIRY", "3600")),
+            )
+            log.info("[rag] document blob store: S3/MinIO bucket=%s",
+                     os.getenv("RAG_S3_BUCKET", "rag-documents"))
+            return store
+        except Exception as exc:  # pragma: no cover - defensive
+            log.warning(
+                "S3 blob store unavailable (%s: %s); using filesystem store.",
+                type(exc).__name__, exc,
+            )
+    return LocalBlobStore(os.getenv("RAG_BLOB_DIR", "data/blobs"))
 
 
 async def build_rag_engine() -> tuple[RagEngine, AsyncEngine]:
@@ -44,8 +132,12 @@ async def build_rag_engine() -> tuple[RagEngine, AsyncEngine]:
     engine = RagEngine(
         vector_store=MilvusVectorStore(),
         embedder=AzureOpenAIEmbedder(),
-        chunker=AutoChunker(),
+        chunker=_build_chunker(),
         sessionmaker=sessionmaker,
+        # Original uploaded files / text are persisted here so documents can be
+        # listed with a download link and fetched back. Filesystem by default;
+        # RAG_BLOB_BACKEND=s3 switches to MinIO / S3 with presigned links.
+        blob_store=_build_blob_store(),
     )
     return engine, db_engine
 

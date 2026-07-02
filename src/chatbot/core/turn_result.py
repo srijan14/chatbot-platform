@@ -45,6 +45,9 @@ class TurnResult:
     signals: list[TurnSignal] = field(default_factory=list)
     awaiting_clarification: bool = False
     clarification: ClarificationData | None = None
+    # Source documents the answer was grounded in this turn (RAG citations):
+    # de-duplicated {document_id, title, url}. Empty when no retrieval happened.
+    sources: list[dict[str, Any]] = field(default_factory=list)
     # Conversation state is now owned by LangGraph's checkpointer; this list
     # stays empty in the LangGraph path. Kept for API parity with the old
     # ConversationManager.persist_turn signature.

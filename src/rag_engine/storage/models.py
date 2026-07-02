@@ -49,17 +49,32 @@ class IngestionJobRow(Base):
 class DocumentRow(Base):
     """Lightweight bookkeeping for dedupe / re-ingestion. One row per ingested
     document (not chunk). `content_hash` drives the "skip if unchanged" branch
-    in the ingestion pipeline."""
+    in the ingestion pipeline.
+
+    The `blob_*` columns point at the original artifact in the BlobStore so the
+    document can be listed with a download link and fetched back verbatim. They
+    are nullable: documents ingested before blob storage existed (or via a
+    connector that doesn't retain the raw bytes) simply have no downloadable
+    file."""
     __tablename__ = "documents"
 
+    # Composite PK (doc_id, tenant_id). `doc_id` is derived from the source uri
+    # only, so the SAME id used by two different bots produces the same doc_id —
+    # tenant_id in the key keeps each bot's row (and its blob pointer) separate,
+    # so one bot can never read/overwrite another's document bookkeeping.
     doc_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     collection: Mapped[str] = mapped_column(String(255), index=True)
     source_uri: Mapped[str] = mapped_column(Text)
     content_hash: Mapped[str] = mapped_column(String(64))
     chunk_count: Mapped[int] = mapped_column(Integer, default=0)
     metadata_json: Mapped[str] = mapped_column(Text, default="{}")
     ingested_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    # Original artifact in the BlobStore (nullable — see class docstring).
+    blob_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    filename: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
 
 class ConnectorRunRow(Base):

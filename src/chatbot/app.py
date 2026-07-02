@@ -132,16 +132,17 @@ async def lifespan(app: FastAPI):
             except FileNotFoundError:
                 # Bot config not on disk; skip pre-warm.
                 continue
-            # Ensure this bot's collection exists and ingest its declared
-            # sources (idempotent; dedupe skips unchanged docs on restart).
-            # Non-blocking enqueue — the background JobRunner drains it.
+            # Ensure this bot's collection exists so search works immediately.
+            # Documents are managed exclusively through the
+            # /bots/{bot_id}/documents API (insert / update / remove) — we do
+            # NOT auto-index any sources at startup (ingest=False).
             if rag_engine is not None and "rag" in bot_config.enabled_skills:
                 try:
-                    await bootstrap_bot_rag(rag_engine, bot_config, ingest=True)
+                    await bootstrap_bot_rag(rag_engine, bot_config, ingest=False)
                 except Exception as exc:
                     startup_log.warning(
-                        "rag bootstrap failed for %s (%s: %s); search may be "
-                        "empty until ingestion succeeds.",
+                        "rag bootstrap failed for %s (%s: %s); the knowledge "
+                        "base collection may be unavailable until this is fixed.",
                         bot_id, type(exc).__name__, exc,
                     )
             try:

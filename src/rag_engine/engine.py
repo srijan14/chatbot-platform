@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from pathlib import PurePosixPath
 from typing import Any
 
 from sqlalchemy import select
@@ -18,6 +19,7 @@ from rag_engine.connectors.registry import ConnectorRegistry, default_registry
 from rag_engine.embeddings.base import Embedder
 from rag_engine.ingestion.loaders import mime_for_path
 from rag_engine.ingestion.pipeline import IngestionPipeline
+from rag_engine.storage.blobs import BlobStore, LocalBlobStore, blob_key_for
 from rag_engine.jobs.queue import JobQueue
 from rag_engine.jobs.runner import JobRunner
 from rag_engine.jobs.store import DocumentsRepo, JobsRepo
@@ -124,10 +126,15 @@ class RagEngine:
         sessionmaker: async_sessionmaker[AsyncSession],
         reranker: Reranker | None = None,
         connector_registry: ConnectorRegistry | None = None,
+        blob_store: BlobStore | None = None,
     ):
         self.vstore = vector_store
         self.embedder = embedder
         self.chunker = chunker
+        # Stores the original artifact (uploaded file / raw text) for download.
+        # Defaults to the filesystem store so callers that don't wire one still
+        # get working list-with-link + download behaviour.
+        self.blob_store = blob_store or LocalBlobStore()
         self.registry = connector_registry or default_registry
 
         self.collections = CollectionsRepo(sessionmaker)
@@ -245,24 +252,53 @@ class RagEngine:
         content: str,
         mime_type: str | None = None,
         metadata: dict[str, Any] | None = None,
+        raw_bytes: bytes | None = None,
+        filename: str | None = None,
     ) -> dict[str, Any]:
         """Add or update one document inline (no connector, no job queue).
 
         `source_uri` is the caller's stable identifier — re-upserting the same
         `source_uri` updates the document in place (old chunks dropped first).
-        Returns a status (`created` / `updated` / `unchanged`) plus counts.
+
+        The original artifact is persisted to the BlobStore so it can be listed
+        with a download link and fetched back: `raw_bytes` for a binary upload
+        (PDF, etc.), or the encoded `content` for a plain-text upsert. Returns a
+        status (`created` / `updated` / `unchanged`) plus counts and the stored
+        blob's facts (content_type / size_bytes / filename).
         """
         spec = await self._resolve_or_raise(tenant_id, collection)
+        resolved_mime = mime_type or mime_for_path(source_uri)
         doc = Document(
             doc_id=doc_id_for(source_uri),
             source_uri=source_uri,
             content=content,
-            mime_type=mime_type or mime_for_path(source_uri),
+            mime_type=resolved_mime,
             tenant_id=tenant_id,
             collection=collection,
             metadata=metadata or {},
         )
+
+        # Persist the original artifact first so the download is available even
+        # if a transient indexing error makes the caller retry. Idempotent: the
+        # key is derived from doc_id, so a retry overwrites in place.
+        data = raw_bytes if raw_bytes is not None else content.encode("utf-8")
+        display_name = filename or PurePosixPath(source_uri).name or source_uri
+        blob_key = blob_key_for(tenant_id, doc.doc_id, source_uri)
+        ref = await self.blob_store.put(blob_key, data, resolved_mime)
+
         counts, decision = await self.pipeline.ingest_one(doc, spec)
+
+        # Record the blob pointer on the bookkeeping row (no-op if ingest errored
+        # before the row was written — nothing to attach a download to then).
+        await self._documents.set_blob(
+            tenant_id,
+            doc.doc_id,
+            blob_key=blob_key,
+            content_type=resolved_mime,
+            size_bytes=ref.size_bytes,
+            filename=display_name,
+        )
+
         if decision is None:
             status = "error"
         elif decision.is_new:
@@ -277,6 +313,46 @@ class RagEngine:
             "status": status,
             "counts": counts.asdict(),
             "errors": counts.error_messages,
+            "content_type": resolved_mime,
+            "size_bytes": ref.size_bytes,
+            "filename": display_name,
+            # Presigned object-store link when the backend exposes one (S3/MinIO);
+            # None for the filesystem store — the API then returns its /content proxy.
+            "download_url": await self.blob_store.url(blob_key),
+        }
+
+    async def get_document_blob(
+        self,
+        tenant_id: str,
+        collection: str,
+        *,
+        source_uri: str | None = None,
+        doc_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Fetch a document's original artifact for download.
+
+        Returns ``{data, content_type, filename}`` or None if the document /
+        blob is absent. Cross-tenant access is refused: the row's tenant +
+        collection must match the caller's scope.
+        """
+        if not source_uri and not doc_id:
+            raise ValueError("get_document_blob requires source_uri or doc_id")
+        resolved_doc_id = doc_id or doc_id_for(source_uri)  # type: ignore[arg-type]
+        row = await self._documents.get(tenant_id, resolved_doc_id)
+        if (
+            row is None
+            or row.get("collection") != collection
+            or not row.get("blob_key")
+        ):
+            return None
+        try:
+            data = await self.blob_store.get(row["blob_key"])
+        except FileNotFoundError:
+            return None
+        return {
+            "data": data,
+            "content_type": row.get("content_type") or "application/octet-stream",
+            "filename": row.get("filename") or PurePosixPath(row["source_uri"]).name,
         }
 
     async def delete_document(
@@ -294,22 +370,36 @@ class RagEngine:
             raise ValueError("delete_document requires source_uri or doc_id")
         resolved_doc_id = doc_id or doc_id_for(source_uri)  # type: ignore[arg-type]
         spec = await self._resolve_or_raise(tenant_id, collection)
+        # Read the blob pointer before we drop the bookkeeping row.
+        row = await self._documents.get(tenant_id, resolved_doc_id)
         chunks_removed = await self.vstore.delete_by_filter(
             spec.physical_name(), where={"doc_id": resolved_doc_id}
         )
-        existed = await self._documents.delete(resolved_doc_id)
+        existed = await self._documents.delete(tenant_id, resolved_doc_id)
+        blob_deleted = False
+        if row and row.get("blob_key"):
+            blob_deleted = await self.blob_store.delete(row["blob_key"])
         return {
             "doc_id": resolved_doc_id,
             "source_uri": source_uri,
             "deleted": existed or chunks_removed > 0,
             "chunks_removed": chunks_removed,
+            "blob_deleted": blob_deleted,
         }
 
     async def list_documents(
         self, tenant_id: str, collection: str
     ) -> list[dict[str, Any]]:
-        """List the documents ingested into a tenant's collection."""
-        return await self._documents.list_for(tenant_id, collection)
+        """List the documents ingested into a tenant's collection.
+
+        Each row carries a `download_url`: a presigned object-store link when the
+        blob backend exposes one, else None (the API falls back to its proxy).
+        """
+        rows = await self._documents.list_for(tenant_id, collection)
+        for r in rows:
+            blob_key = r.get("blob_key")
+            r["download_url"] = await self.blob_store.url(blob_key) if blob_key else None
+        return rows
 
     # --- retrieval ------------------------------------------------------
     async def search(
@@ -321,7 +411,31 @@ class RagEngine:
         filters: dict[str, Any] | None = None,
     ) -> list[SearchResult]:
         spec = await self._resolve_or_raise(tenant_id, collection)
-        return await self.retriever.search(query, spec, top_k=top_k, filters=filters)
+        results = await self.retriever.search(query, spec, top_k=top_k, filters=filters)
+        await self._attach_source_urls(tenant_id, results)
+        return results
+
+    async def _attach_source_urls(
+        self, tenant_id: str, results: list[SearchResult]
+    ) -> None:
+        """Best-effort: stamp each hit's `metadata["source_url"]` with a presigned
+        link to its original document, so chat citations can point back to the
+        source file. Never fails search — a link problem must not break retrieval.
+        """
+        try:
+            doc_ids = {r.doc_id for r in results if r.doc_id}
+            if not doc_ids:
+                return
+            blob_keys = await self._documents.blob_keys_for(tenant_id, doc_ids)
+            for r in results:
+                blob_key = blob_keys.get(r.doc_id)
+                if not blob_key:
+                    continue
+                url = await self.blob_store.url(blob_key)
+                if url:
+                    r.metadata = {**(r.metadata or {}), "source_url": url}
+        except Exception:  # pragma: no cover - defensive
+            log.warning("source_url enrichment failed", exc_info=True)
 
     # --- internals ------------------------------------------------------
     async def _resolve_or_raise(self, tenant_id: str, collection: str) -> CollectionSpec:

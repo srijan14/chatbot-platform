@@ -46,6 +46,7 @@ from src.chatbot.core.middleware import (
     build_dynamic_prompt,
 )
 from src.chatbot.core.state import ChatbotAgentState
+from src.chatbot.core.turn_context import capture_sources
 from src.chatbot.core.turn_result import (
     ClarificationData,
     ToolCallTrace,
@@ -225,7 +226,10 @@ class LangGraphOrchestrator:
                 }
 
             try:
-                result = await graph.ainvoke(graph_input, config=config)
+                # Collect source references skills emit while the graph runs
+                # (RAG citations) so they can surface on the chat response.
+                with capture_sources() as collected_sources:
+                    result = await graph.ainvoke(graph_input, config=config)
             except Exception as exc:
                 # Surface the exception type AND message in the response so the
                 # bot can see what actually broke without having to dig through
@@ -352,6 +356,17 @@ class LangGraphOrchestrator:
             prompt_tokens, completion_tokens, cached_tokens,
         )
 
+        # De-duplicate the turn's source documents by id, preserving order, so
+        # the same document retrieved by several passages appears once.
+        sources: list[dict[str, Any]] = []
+        seen_sources: set[str] = set()
+        for src in collected_sources:
+            key = src.get("document_id") or ""
+            if key in seen_sources:
+                continue
+            seen_sources.add(key)
+            sources.append(src)
+
         log_payload = self._build_log_payload(
             trace_id, session, bot_config, latency_ms,
             iterations, prompt_tokens, completion_tokens, cached_tokens,
@@ -371,6 +386,7 @@ class LangGraphOrchestrator:
             signals=signals,
             awaiting_clarification=awaiting_clarification,
             clarification=clarification,
+            sources=sources,
             new_messages=[],
             log_payload=log_payload,
         )

@@ -8,9 +8,11 @@ from src.chatbot.api.schemas import (
     ClarificationOut,
     HistoryMessage,
     HistoryResponse,
+    SourceRef,
     ToolCallTraceOut,
     TurnSignalOut,
 )
+from src.chatbot.api.security import verify_api_key
 from src.chatbot.core import guardrails
 from src.chatbot.observability.logger import get_logger, log_turn, truncate
 from src.chatbot.skills.clarification_skill import TOOL_NAME as CLARIFY_TOOL_NAME
@@ -54,6 +56,9 @@ def _messages_to_visible(messages: list[BaseMessage]) -> list[HistoryMessage]:
 @router.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, request: Request) -> ChatResponse:
     state = request.app.state
+    # Per-bot API key (no-op for bots that configure none). Also 404s an
+    # unknown bot before we do any work.
+    verify_api_key(state, req.bot_id, request.headers.get("x-api-key"))
 
     _log.info(
         "[chat] REQUEST  session=%s customer=%s bot=%s message=%r",
@@ -119,6 +124,7 @@ async def chat(req: ChatRequest, request: Request) -> ChatResponse:
             "completion": result.completion_tokens,
             "cached": result.cached_tokens,
         },
+        sources=[SourceRef(**s) for s in result.sources],
         signals=[
             TurnSignalOut(type=s.type, payload=s.payload) for s in result.signals
         ],
@@ -141,6 +147,9 @@ async def get_history(session_id: str, request: Request) -> HistoryResponse:
         _log.info("[chat] HISTORY session=%s → no row, returning empty", session_id)
         return HistoryResponse(session_id=session_id)
 
+    # Auth against the bot that owns this session (key policy is per-bot).
+    verify_api_key(state, session.bot_id, request.headers.get("x-api-key"))
+
     bot_config = state.router.get_config(session.bot_id)
     skills = state.router.get_skills(session.bot_id)
     messages = await state.orchestrator.get_state_messages(session_id, bot_config, skills)
@@ -162,6 +171,7 @@ async def get_history(session_id: str, request: Request) -> HistoryResponse:
 
 @router.post("/chat/reset")
 async def reset(req: ChatRequest, request: Request):
+    verify_api_key(request.app.state, req.bot_id, request.headers.get("x-api-key"))
     # Clear BOTH stores: the relational session/messages rows AND the LangGraph
     # checkpoint thread (where the agent's real history lives). Clearing only
     # the former leaves a poisoned thread that keeps replaying.

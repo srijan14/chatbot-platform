@@ -26,6 +26,7 @@ from langchain_core.tools import StructuredTool
 from langgraph.types import interrupt
 
 from src.chatbot.adapters.json_schema_to_pydantic import build_args_model
+from src.chatbot.core.turn_context import add_sources
 from src.chatbot.observability.logger import get_logger, truncate
 from src.chatbot.skills.base import Skill, ToolResult
 
@@ -57,6 +58,9 @@ async def skill_to_langchain_tools(skill: Skill) -> list[StructuredTool]:
                 _skill.name, _name, truncate(args, 240),
             )
             result: ToolResult = await _skill.execute_tool(_name, args)
+            # Collect any source references into the turn's collector so they
+            # reach the chat response (see core/turn_context.py).
+            add_sources(result.sources)
             return _handle_result(_name, result)
 
         tool = StructuredTool.from_function(

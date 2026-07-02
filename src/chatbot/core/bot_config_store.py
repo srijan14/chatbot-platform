@@ -29,6 +29,25 @@ def is_reasoning_deployment(name: str) -> bool:
     return bool(_REASONING_PATTERN.search(name.lower()))
 
 
+_ENV_REF = re.compile(r"\$\{([A-Z0-9_]+)\}")
+
+
+def _resolve_api_keys(raw: list) -> list[str]:
+    """Normalise a YAML `auth.api_keys` list into concrete key strings.
+
+    Each entry may be a literal key or an `${ENV_VAR}` reference so the real
+    secret lives in the environment, not in the committed YAML. Unset refs and
+    blanks are dropped, so a placeholder like `${PARTNER_KEY}` with no env value
+    simply contributes no key (that bot stays open) rather than accepting "".
+    """
+    keys: list[str] = []
+    for entry in raw or []:
+        value = _ENV_REF.sub(lambda m: os.getenv(m.group(1), ""), str(entry)).strip()
+        if value:
+            keys.append(value)
+    return keys
+
+
 @dataclass
 class MCPServerRef:
     name: str
@@ -129,6 +148,10 @@ class BotConfig:
     rag: RagConfig = field(default_factory=RagConfig)
     # tag skill (only required when 'tag' is in enabled_skills)
     tag: TagConfigSpec | None = None
+    # API keys accepted for this bot's control-plane + chat endpoints. Empty =
+    # auth disabled for this bot (open); non-empty = callers must present a
+    # matching `X-API-Key`. Managed per-bot in YAML (see `auth.api_keys`).
+    api_keys: list[str] = field(default_factory=list)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "BotConfig":
@@ -182,6 +205,9 @@ class BotConfig:
             search_instructions=rag_raw.get("search_instructions"),
         )
 
+        auth_raw = data.get("auth") or {}
+        api_keys = _resolve_api_keys(auth_raw.get("api_keys") or [])
+
         tag_raw = data.get("tag") or {}
         tag_spec: TagConfigSpec | None = None
         if tag_raw:
@@ -224,6 +250,7 @@ class BotConfig:
             clarification=clarification,
             rag=rag,
             tag=tag_spec,
+            api_keys=api_keys,
         )
 
 

@@ -88,6 +88,15 @@ guardrails:
   max_input_chars: 2000
   pii_redaction_in_logs: true
 
+# API keys accepted for THIS bot's endpoints (documents control plane + chat).
+# Managed per bot. Each entry is a literal key or a ${ENV_VAR} reference — keep
+# real secrets in the environment, not in this committed file. An empty/blank
+# list (e.g. the ${...} below with no env value) disables auth for this bot, so
+# local/dev stays open; set AM_MARKETPLACE_API_KEY to require the key.
+auth:
+  api_keys:
+    - ${AM_MARKETPLACE_API_KEY}
+
 observability:
   log_level: info
   log_format: json
