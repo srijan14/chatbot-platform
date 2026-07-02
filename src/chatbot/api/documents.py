@@ -157,7 +157,12 @@ async def upload_document(
         raise HTTPException(
             413, f"File exceeds the {_mb(MAX_UPLOAD_BYTES)} MB upload limit."
         )
+    # Prefer the id's extension; fall back to the uploaded file's content type
+    # so a document_id without an extension (e.g. ".docx") still routes to the
+    # right extractor.
     mime = mime_for_path(document_id)
+    if mime == "application/octet-stream" and file.content_type:
+        mime = file.content_type
     try:
         text = bytes_to_text(raw, mime)
     except Exception as e:

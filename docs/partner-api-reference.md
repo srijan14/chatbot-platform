@@ -66,9 +66,10 @@ Errors return a JSON body `{ "detail": "..." }` (validation errors use a list of
 
 ## Knowledge Base API
 
-All paths are scoped to `{bot_id}`. Supported files: **PDF, Markdown, TXT, HTML,
-JSON**, and other UTF‑8 text. (Scanned/image‑only PDFs have no text — OCR them
-first.) Each document's original file is stored and returned as a `download_url`.
+All paths are scoped to `{bot_id}`. Supported files: **PDF, Word (.docx),
+Markdown, TXT, HTML, JSON**, and other UTF‑8 text. (Scanned/image‑only PDFs have
+no text — OCR them first; legacy `.doc` must be saved as `.docx` or PDF.) Each
+document's original file is stored and returned as a `download_url`.
 
 ### Upload a file — `POST /bots/{bot_id}/documents/upload`
 

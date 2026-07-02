@@ -20,3 +20,5 @@ logs/
 *.swp
 node_modules/
 .idea/
+doc/
+tests

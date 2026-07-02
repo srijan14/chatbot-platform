@@ -27,6 +27,8 @@ dependencies = [
     # real Milvus cluster in prod via MILVUS_URI.
     "pymilvus>=2.4",
     "pypdf>=4.0",
+    # Word .docx text extraction for the document-upload API.
+    "python-docx>=1.1",
     # S3 client for the MinIO/S3 document blob store (RAG_BLOB_BACKEND=s3):
     # object put/get/delete + presigned download links.
     "boto3>=1.34",
